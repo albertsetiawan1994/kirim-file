@@ -1,0 +1,13 @@
+{
+  "name": "kirim-file",
+  "version": "1.0.0",
+  "description": "Local Network File Transfer with WebRTC and mDNS",
+  "scripts": {
+    "deploy": "cd client && npm run build && cd .. && firebase deploy",
+    "server": "cd server && node index.js",
+    "client": "cd client && npm run dev"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
+}
