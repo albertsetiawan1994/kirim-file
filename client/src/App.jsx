@@ -76,6 +76,8 @@ function App() {
     const isPausedRef = useRef(false);
     const isCancelledRef = useRef(false);
     const lastEtaValueRef = useRef(0); // Store ETA in seconds for comparison
+    const transferTypeRef = useRef('sending');
+    const transferStateRef = useRef('idle');
     const retryCountRef = useRef(0);
   const MAX_RETRIES = 3;
 
@@ -228,7 +230,9 @@ function App() {
     
     const startTime = Date.now();
     setTransferState('connecting');
+    transferStateRef.current = 'connecting';
     setTransferType('sending');
+    transferTypeRef.current = 'sending';
     isPausedRef.current = false;
     isCancelledRef.current = false;
     setIsPaused(false);
@@ -259,12 +263,13 @@ function App() {
 
     peer.on('connect', async () => {
       const handshakeDuration = Date.now() - startTime;
-      console.log(`[Performance] Handshake Berhasil dalam ${handshakeDuration}ms`);
+      console.log(`[Handshake] Berhasil dalam ${handshakeDuration}ms`);
       if (handshakeDuration < 500) {
-        console.log('%cHandshake Ultra Cepat (<500ms)', 'color: #10b981; font-weight: bold');
+        console.log('%c[Handshake] Ultra Cepat (<500ms)', 'color: #10b981; font-weight: bold');
       }
 
       setTransferState('transferring');
+      transferStateRef.current = 'transferring';
       peer.send(JSON.stringify({ type: 'batch-start', count: fileList.length, isSecure }));
 
       try {
@@ -394,6 +399,7 @@ function App() {
 
       if (!isCancelledRef.current) {
         setTransferState('completed');
+        transferStateRef.current = 'completed';
         toast.success('Semua file berhasil dikirim! Halaman akan dimuat ulang...');
         setHistory(prev => [{
           id: Date.now(),
@@ -425,10 +431,10 @@ function App() {
     });
 
     peer.on('error', (err) => {
-      console.error(`Peer error (Attempt ${retryAttempt + 1}):`, err);
+      console.error(`[Peer Error] Attempt ${retryAttempt + 1}:`, err);
       
       // Handshake Retry Mechanism with Exponential Backoff
-      if (transferState === 'connecting' && retryAttempt < MAX_RETRIES && !isCancelledRef.current) {
+      if (transferStateRef.current === 'connecting' && retryAttempt < MAX_RETRIES && !isCancelledRef.current) {
         const backoffDelay = Math.pow(2, retryAttempt) * 1000;
         console.log(`[Handshake] Gagal, mencoba ulang dalam ${backoffDelay}ms...`);
         setTimeout(() => startTransfer(retryAttempt + 1), backoffDelay);
@@ -441,27 +447,28 @@ function App() {
       }
 
       // Attempt ICE Restart on connection failure if transferring
-      if (transferState === 'transferring' && !isCancelledRef.current) {
-        console.log('Attempting ICE Restart...');
+      if (transferStateRef.current === 'transferring' && !isCancelledRef.current) {
+        console.log('[ICE] Attempting ICE Restart...');
         peer.renegotiate();
         
         // If still error after timeout, force refresh
         setTimeout(() => {
-          if (transferState !== 'completed' && !isCancelledRef.current) {
+          if (transferStateRef.current !== 'completed' && !isCancelledRef.current) {
             toast.error('Koneksi terputus secara permanen. Memuat ulang...');
             setTimeout(() => window.location.reload(), 2000);
           }
         }, 8000);
       } else {
         setTransferState('error');
+        transferStateRef.current = 'error';
         toast.error('Gagal mengirim file: Koneksi bermasalah. Memuat ulang...');
         setTimeout(() => window.location.reload(), 3000);
       }
     });
     
     peer.on('close', () => {
-      if (transferState === 'transferring' && !isCancelledRef.current) {
-        console.log('Peer connection closed unexpectedly during transfer');
+      if (transferStateRef.current === 'transferring' && !isCancelledRef.current) {
+        console.log('[Peer] Connection closed unexpectedly during transfer');
         
         // Notify other peer via Signaling before refreshing
         if (socket && targetUser) {
@@ -520,7 +527,9 @@ function App() {
     }
 
     setTransferState('transferring');
+    transferStateRef.current = 'transferring';
     setTransferType('receiving');
+    transferTypeRef.current = 'receiving';
     const { from, signal } = incomingSignal;
     setIncomingSignal(null);
     setVerifyPin('');
@@ -600,7 +609,7 @@ function App() {
           lastProgressTime = Date.now();
           // Decoupled: Receiver only takes progress/processed as reference
           // but calculates its own speed and ETA locally for better accuracy
-          if (transferType === 'receiving') {
+          if (transferTypeRef.current === 'receiving') {
             setProgress(message.progress);
             setProcessedSize(message.processed);
             
@@ -650,7 +659,7 @@ function App() {
       if (metadata) {
         const currentProgress = (receivedSize / metadata.size) * 100;
         // Receiver relies on local binary flow for speed and ETA
-        if (transferType === 'receiving') {
+        if (transferTypeRef.current === 'receiving') {
           const now = Date.now();
           // Throttle UI updates (100ms) but ensure ETA is updated immediately at start
           if (now - lastUIUpdateTime > 100 || receivedSize >= metadata.size || receivedSize <= chunkSize * 5) {
@@ -696,8 +705,11 @@ function App() {
         const newFiles = [...prev, { name: fileName, url, size: fileSize }];
         
         currentFilesCount++;
+        console.log(`[Transfer] File selesai diproses (${currentFilesCount}/${totalFiles}): ${fileName}`);
+
         if (currentFilesCount >= totalFiles) {
           setTransferState('completed');
+          transferStateRef.current = 'completed';
           toast.success('Berhasil menerima semua file! Halaman akan dimuat ulang...');
           
           newFiles.forEach(file => {
@@ -732,8 +744,8 @@ function App() {
     };
 
     peer.on('error', (err) => {
-      console.error('Receiver Peer error:', err);
-      if (transferState === 'transferring' && !isCancelledRef.current) {
+      console.error('[Receiver Peer Error]:', err);
+      if (transferStateRef.current === 'transferring' && !isCancelledRef.current) {
         // Notify other peer via Signaling
         if (socket && from) {
           socket.emit('signal', { to: from, from: me, signal: { type: 'control', action: 'force-refresh' } });
@@ -744,7 +756,8 @@ function App() {
     });
 
     peer.on('close', () => {
-      if (transferState === 'transferring' && !isCancelledRef.current) {
+      if (transferStateRef.current === 'transferring' && !isCancelledRef.current) {
+        console.log('[Receiver Peer] Connection closed unexpectedly');
         // Notify other peer via Signaling
         if (socket && from) {
           socket.emit('signal', { to: from, from: me, signal: { type: 'control', action: 'force-refresh' } });
