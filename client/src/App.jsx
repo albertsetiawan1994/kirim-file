@@ -618,8 +618,8 @@ function App() {
         // Receiver relies on local binary flow for speed and ETA
         if (transferType === 'receiving') {
           const now = Date.now();
-          // Throttle UI updates (100ms) to prevent UI lag and ensure stable ETA
-          if (now - lastUIUpdateTime > 100 || receivedSize >= metadata.size) {
+          // Throttle UI updates (100ms) but ensure ETA is updated immediately at start
+          if (now - lastUIUpdateTime > 100 || receivedSize >= metadata.size || receivedSize <= chunkSize * 2) {
             setProgress(currentProgress);
             setProcessedSize(receivedSize);
             setTransferSpeed(currentLocalSpeed);

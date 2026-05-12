@@ -59,7 +59,7 @@ export const detectConnectionType = (candidate) => {
  * Estimasi sisa waktu transfer (ETA)
  */
 export const calculateETA = (totalSize, uploadedSize, speed) => {
-  if (speed <= 10) return '--:--'; // Jangan tampilkan ETA jika kecepatan terlalu rendah ( < 10B/s)
+  if (speed <= 0) return '--:--';
   const remaining = totalSize - uploadedSize;
   const seconds = Math.floor(remaining / speed);
   
