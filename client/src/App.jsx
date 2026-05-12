@@ -227,91 +227,109 @@ function App() {
       setTransferState('transferring');
       peer.send(JSON.stringify({ type: 'batch-start', count: fileList.length, isSecure }));
 
-      for (let i = 0; i < fileList.length; i++) {
-        if (isCancelledRef.current) break;
-        setCurrentFileIndex(i);
-        const file = fileList[i];
-        const hash = await calculateHash(file);
-        
-        const metadata = {
-          name: file.name,
-          size: file.size,
-          mime: file.type || 'application/octet-stream',
-          hash
-        };
-        setCurrentFileMetadata(metadata);
-        peer.send(JSON.stringify({ type: 'metadata', ...metadata }));
-
-        await new Promise((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = async (e) => {
-            let buffer = e.target.result;
-            
-            // Kompresi jika file besar
-            const { compressed, data: finalBuffer } = compressData(buffer);
-            if (compressed) {
-              peer.send(JSON.stringify({ type: 'control', action: 'compressed' }));
-              buffer = finalBuffer;
-            }
-
-            let offset = 0;
-            let chunkSize = MIN_CHUNK_SIZE;
-
-            const sendChunk = async () => {
-              try {
-                while (offset < buffer.byteLength) {
-                  if (isCancelledRef.current || peer.destroyed) {
-                    reject(new Error('Transfer dibatalkan'));
-                    return;
-                  }
-
-                  if (isPausedRef.current) {
-                    setTimeout(sendChunk, 500);
-                    return;
-                  }
-
-                  if (peer.bufferSize > BUFFER_THRESHOLD) {
-                    setTimeout(sendChunk, 50);
-                    return;
-                  }
-
-                  const currentChunk = buffer.slice(offset, offset + chunkSize);
-                  let dataToSend = currentChunk;
-
-                  if (isSecure && encryptionKeyRef.current) {
-                    const iv = window.crypto.getRandomValues(new Uint8Array(12));
-                    const encrypted = await encryptChunk(encryptionKeyRef.current, currentChunk, iv);
-                    const combined = new Uint8Array(iv.length + encrypted.byteLength);
-                    combined.set(iv);
-                    combined.set(new Uint8Array(encrypted), iv.length);
-                    dataToSend = combined;
-                  }
-
-                  peer.send(dataToSend);
-                  offset += currentChunk.byteLength;
-                  updateSpeed(currentChunk.byteLength);
-                  
-                  const currentProgress = (offset / buffer.byteLength) * 100;
-                  setProgress(currentProgress);
-                  setProcessedSize(offset);
-                  setEta(calculateETA(buffer.byteLength, offset, transferSpeed));
-
-                  // Send progress to receiver
-                  peer.send(JSON.stringify({ type: 'progress', progress: currentProgress, processed: offset, speed: transferSpeed }));
-
-                  if (peer.bufferSize < BUFFER_THRESHOLD / 2) {
-                    chunkSize = Math.min(MAX_CHUNK_SIZE, chunkSize + 4096);
-                  }
-                }
-                resolve();
-              } catch (err) {
-                reject(err);
-              }
-            };
-            sendChunk();
+      try {
+        for (let i = 0; i < fileList.length; i++) {
+          if (isCancelledRef.current) break;
+          setCurrentFileIndex(i);
+          const file = fileList[i];
+          const hash = await calculateHash(file);
+          
+          const metadata = {
+            name: file.name,
+            size: file.size,
+            mime: file.type || 'application/octet-stream',
+            hash
           };
-          reader.readAsArrayBuffer(file);
-        });
+          setCurrentFileMetadata(metadata);
+          peer.send(JSON.stringify({ type: 'metadata', ...metadata }));
+
+          await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = async (e) => {
+              let buffer = e.target.result;
+              
+              const { compressed, data: finalBuffer } = compressData(buffer);
+              if (compressed) {
+                peer.send(JSON.stringify({ type: 'control', action: 'compressed' }));
+                buffer = finalBuffer;
+              }
+
+              let offset = 0;
+              let chunkSize = MIN_CHUNK_SIZE;
+              let lastProgressUpdate = 0;
+
+              const sendChunk = async () => {
+                try {
+                  while (offset < buffer.byteLength) {
+                    if (isCancelledRef.current || peer.destroyed) {
+                      reject(new Error('Transfer dibatalkan'));
+                      return;
+                    }
+
+                    if (isPausedRef.current) {
+                      setTimeout(sendChunk, 500);
+                      return;
+                    }
+
+                    if (peer.bufferSize > BUFFER_THRESHOLD) {
+                      setTimeout(sendChunk, 50);
+                      return;
+                    }
+
+                    const currentChunk = buffer.slice(offset, offset + chunkSize);
+                    let dataToSend = currentChunk;
+
+                    if (isSecure && encryptionKeyRef.current) {
+                      const iv = window.crypto.getRandomValues(new Uint8Array(12));
+                      const encrypted = await encryptChunk(encryptionKeyRef.current, currentChunk, iv);
+                      const combined = new Uint8Array(iv.length + encrypted.byteLength);
+                      combined.set(iv);
+                      combined.set(new Uint8Array(encrypted), iv.length);
+                      dataToSend = combined;
+                    }
+
+                    peer.send(dataToSend);
+                    offset += currentChunk.byteLength;
+                    const currentSpeed = updateSpeed(currentChunk.byteLength);
+                    
+                    const currentProgress = (offset / buffer.byteLength) * 100;
+                    
+                    // Throttle state updates and signaling to improve performance
+                    if (Date.now() - lastProgressUpdate > 200) {
+                      setProgress(currentProgress);
+                      setProcessedSize(offset);
+                      setEta(calculateETA(buffer.byteLength, offset, currentSpeed));
+                      
+                      // Explicitly send speed and progress to receiver
+                      peer.send(JSON.stringify({ 
+                        type: 'progress', 
+                        progress: currentProgress, 
+                        processed: offset, 
+                        speed: currentSpeed 
+                      }));
+                      lastProgressUpdate = Date.now();
+                    }
+
+                    if (peer.bufferSize < BUFFER_THRESHOLD / 2) {
+                      chunkSize = Math.min(MAX_CHUNK_SIZE, chunkSize + 4096);
+                    }
+                  }
+                  resolve();
+                } catch (err) {
+                  reject(err);
+                }
+              };
+              sendChunk();
+            };
+            reader.readAsArrayBuffer(file);
+          });
+        }
+      } catch (err) {
+        if (err.message !== 'Transfer dibatalkan') {
+          console.error('Transfer error:', err);
+          toast.error('Terjadi kesalahan saat transfer');
+        }
+        return; // Exit if error or cancelled
       }
 
       if (!isCancelledRef.current) {
@@ -553,7 +571,19 @@ function App() {
   // --- Render Components ---
   return (
     <div className="min-h-screen bg-[#0a0c10] text-slate-200 font-sans selection:bg-blue-500/30 overflow-x-hidden">
-      <Toaster position="top-right" containerStyle={{ top: 20, right: 20 }} />
+      <Toaster 
+        position="top-right" 
+        toastOptions={{
+          style: {
+            background: '#0d1117',
+            color: '#fff',
+            border: '1px solid rgba(255,255,255,0.1)',
+            borderRadius: '16px',
+            fontSize: '14px',
+            fontWeight: '600'
+          }
+        }}
+      />
       {/* Background Decor */}
       <div className="fixed inset-0 overflow-hidden pointer-events-none">
         <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-blue-600/10 blur-[120px] rounded-full" />
@@ -643,7 +673,10 @@ function App() {
                     </div>
                   ) : (
                     <>
-                      <p className="text-xs font-semibold text-white">{displayName || 'Anonymous'}</p>
+                      <div className="flex flex-col items-end">
+                        <p className="text-xs font-semibold text-white">{displayName || 'Anonymous'}</p>
+                        <p className="text-[10px] text-slate-500 font-mono opacity-60">ID: {me.slice(0, 6)}</p>
+                      </div>
                       <button 
                         onClick={() => {setIsEditingName(true); setTempName(displayName);}}
                         className="text-slate-500 hover:text-blue-400 transition-colors opacity-0 group-hover:opacity-100"
@@ -1017,9 +1050,10 @@ function App() {
         {/* --- Overlays & Dialogs --- */}
         
         {/* Transfer Progress Overlay */}
-        <AnimatePresence>
-          {transferState === 'transferring' && (
+        <AnimatePresence mode="wait">
+          {(transferState === 'transferring' || transferState === 'connecting') && (
             <motion.div 
+              key="transfer-overlay"
               initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
               className="fixed inset-0 bg-black/80 backdrop-blur-md flex items-center justify-center z-[100] p-4"
             >
@@ -1083,6 +1117,7 @@ function App() {
           {/* Incoming Transfer Request */}
           {incomingSignal && (
             <motion.div 
+              key="incoming-request"
               initial={{ opacity: 0, y: 50, scale: 0.9 }} 
               animate={{ opacity: 1, y: 0, scale: 1 }} 
               exit={{ opacity: 0, scale: 0.9 }}
@@ -1140,6 +1175,7 @@ function App() {
           {/* Success Notification */}
           {receivedFiles.length > 0 && transferState === 'completed' && (
             <motion.div 
+              key="success-notification"
               initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }}
               className="fixed bottom-8 left-1/2 -translate-x-1/2 z-[80] w-full max-w-xl px-4"
             >
