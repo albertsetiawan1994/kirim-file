@@ -550,6 +550,7 @@ function App() {
           receivedSize = 0;
           setProgress(0);
           setProcessedSize(0);
+          setEta('--:--'); // Reset ETA to default
           isCompressed = false;
           // Reset speed calculation for new file
           speedRef.current = { bytes: 0, lastTime: Date.now(), window: [], currentSpeed: 0 };
@@ -580,10 +581,13 @@ function App() {
             setProgress(message.progress);
             setProcessedSize(message.processed);
             
-            // Perbarui ETA juga di sini menggunakan kecepatan lokal saat ini
+            // CRITICAL FIX: Jangan biarkan pesan progress tanpa ETA dari pengirim
+            // meng-overwrite state ETA lokal penerima. 
+            // Kita hitung ulang ETA di sini menggunakan kecepatan lokal.
             const currentSpeed = speedRef.current.currentSpeed;
             if (currentSpeed > 0 && metadata) {
-              setEta(calculateETA(metadata.size, message.processed, currentSpeed));
+              const localEta = calculateETA(metadata.size, message.processed, currentSpeed);
+              if (localEta !== '--:--') setEta(localEta);
             }
           } else {
             // Sender updates from receiver's feedback if any (though currently one-way)
@@ -619,12 +623,12 @@ function App() {
         if (transferType === 'receiving') {
           const now = Date.now();
           // Throttle UI updates (100ms) but ensure ETA is updated immediately at start
-          if (now - lastUIUpdateTime > 100 || receivedSize >= metadata.size || receivedSize <= chunkSize * 2) {
+          if (now - lastUIUpdateTime > 100 || receivedSize >= metadata.size || receivedSize <= chunkSize * 5) {
             setProgress(currentProgress);
             setProcessedSize(receivedSize);
             setTransferSpeed(currentLocalSpeed);
             const newEta = calculateETA(metadata.size, receivedSize, currentLocalSpeed);
-            setEta(newEta);
+            if (newEta !== '--:--') setEta(newEta);
             lastUIUpdateTime = now;
           }
         }
