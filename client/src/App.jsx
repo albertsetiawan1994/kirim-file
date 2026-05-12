@@ -121,10 +121,12 @@ function App() {
     });
 
     newSocket.on('signal', ({ from, signal, pin }) => {
-      // Handle Control Signals (Cancel, etc) via Signaling Fallback
+      // Handle Control Signals (Cancel, Error, etc) via Signaling Fallback
       if (signal && signal.type === 'control') {
-        if (signal.action === 'cancel') {
-          handleCancelTransfer(false);
+        if (signal.action === 'cancel' || signal.action === 'force-refresh') {
+          const reason = signal.action === 'force-refresh' ? 'Koneksi lawan bermasalah' : 'Transfer dibatalkan';
+          toast.error(`${reason}. Memuat ulang...`);
+          setTimeout(() => window.location.reload(), 2000);
         }
         return;
       }
@@ -409,6 +411,12 @@ function App() {
 
     peer.on('error', (err) => {
       console.error('Peer error:', err);
+      
+      // Notify other peer via Signaling before refreshing
+      if (socket && targetUser) {
+        socket.emit('signal', { to: targetUser.id, from: me, signal: { type: 'control', action: 'force-refresh' } });
+      }
+
       // Attempt ICE Restart on connection failure if transferring
       if (transferState === 'transferring' && !isCancelledRef.current) {
         console.log('Attempting ICE Restart...');
@@ -431,6 +439,12 @@ function App() {
     peer.on('close', () => {
       if (transferState === 'transferring' && !isCancelledRef.current) {
         console.log('Peer connection closed unexpectedly during transfer');
+        
+        // Notify other peer via Signaling before refreshing
+        if (socket && targetUser) {
+          socket.emit('signal', { to: targetUser.id, from: me, signal: { type: 'control', action: 'force-refresh' } });
+        }
+
         toast.error('Koneksi ditutup. Memuat ulang...');
         setTimeout(() => window.location.reload(), 2000);
       }
@@ -683,6 +697,10 @@ function App() {
     peer.on('error', (err) => {
       console.error('Receiver Peer error:', err);
       if (transferState === 'transferring' && !isCancelledRef.current) {
+        // Notify other peer via Signaling
+        if (socket && from) {
+          socket.emit('signal', { to: from, from: me, signal: { type: 'control', action: 'force-refresh' } });
+        }
         toast.error('Koneksi terputus. Memuat ulang...');
         setTimeout(() => window.location.reload(), 2000);
       }
@@ -690,6 +708,10 @@ function App() {
 
     peer.on('close', () => {
       if (transferState === 'transferring' && !isCancelledRef.current) {
+        // Notify other peer via Signaling
+        if (socket && from) {
+          socket.emit('signal', { to: from, from: me, signal: { type: 'control', action: 'force-refresh' } });
+        }
         toast.error('Koneksi ditutup. Memuat ulang...');
         setTimeout(() => window.location.reload(), 2000);
       }
