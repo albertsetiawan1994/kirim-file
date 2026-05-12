@@ -476,11 +476,41 @@ function App() {
               <img src="/logo.png" alt="Logo" className="w-full h-full object-contain rounded-full" />
             </div>
             <div>
-              <h1 className="text-xl font-bold tracking-tight text-white">KirimFile<span className="text-blue-500">.</span></h1>
+              <div className="flex items-center gap-2">
+                <h1 className="text-xl font-bold tracking-tight text-white">KirimFile<span className="text-blue-500">.</span></h1>
+                {/* Mobile Name Display & Edit */}
+                <div className="md:hidden flex items-center gap-2 bg-white/5 px-2 py-1 rounded-lg border border-white/10">
+                  {isEditingName ? (
+                    <div className="flex items-center gap-1">
+                      <input 
+                        autoFocus
+                        type="text"
+                        value={tempName}
+                        onChange={(e) => setTempName(e.target.value)}
+                        onKeyDown={(e) => e.key === 'Enter' && handleSaveName()}
+                        className="bg-black/40 border border-blue-500/50 rounded-md px-2 py-0.5 text-[10px] text-white outline-none w-20"
+                      />
+                      <button onClick={handleSaveName} className="text-blue-500">
+                        <CheckCircle size={12} />
+                      </button>
+                    </div>
+                  ) : (
+                    <>
+                      <span className="text-[10px] font-bold text-slate-300 truncate max-w-[80px]">{displayName || 'User'}</span>
+                      <button 
+                        onClick={() => {setIsEditingName(true); setTempName(displayName);}}
+                        className="text-slate-500 hover:text-blue-400"
+                      >
+                        <Edit2 size={10} />
+                      </button>
+                    </>
+                  )}
+                </div>
+              </div>
               <div className="flex items-center gap-2 text-[10px] font-medium uppercase tracking-wider">
                 <span className={`flex h-1.5 w-1.5 rounded-full ${isConnected ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} />
                 <span className={isConnected ? 'text-green-400' : 'text-red-400'}>
-                  {isConnected ? `ONLINE (${connectionMode})` : 'CONNECTING...'}
+                  {isConnected ? `${connectionMode}` : 'CONNECTING...'}
                 </span>
               </div>
             </div>
@@ -531,13 +561,6 @@ function App() {
                     </>
                   )}
                 </div>
-                <p className="text-[10px] text-slate-500">{me.slice(0, 8)}</p>
-              </div>
-              <div 
-                onClick={() => {setIsEditingName(true); setTempName(displayName);}}
-                className="w-10 h-10 rounded-full bg-gradient-to-br from-slate-700 to-slate-800 border border-white/10 flex items-center justify-center text-blue-400 font-bold text-sm cursor-pointer hover:border-blue-500/50 transition-all"
-              >
-                <Edit2 size={18} />
               </div>
             </div>
           </div>
