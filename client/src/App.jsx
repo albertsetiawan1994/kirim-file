@@ -65,6 +65,7 @@ function App() {
   const [isPaused, setIsPaused] = useState(false);
   const [currentFileMetadata, setCurrentFileMetadata] = useState(null);
   const [processedBytes, setProcessedSize] = useState(0);
+  const [isDownloadClicked, setIsDownloadClicked] = useState(false);
   
   // --- Refs ---
   const peerRef = useRef();
@@ -347,8 +348,9 @@ function App() {
 
         // Auto refresh for sender after completion
         setTimeout(() => {
+          // Check if still on the same page and transfer is idle/completed
           window.location.reload();
-        }, 3000);
+        }, 5000);
       }
     });
 
@@ -485,6 +487,7 @@ function App() {
         if (message.type === 'progress') {
           setProgress(message.progress);
           setProcessedSize(message.processed);
+          // Set speed directly from sender to ensure sync
           setTransferSpeed(message.speed);
           return;
         }
@@ -531,18 +534,10 @@ function App() {
           currentFilesCount++;
           if (currentFilesCount >= totalFiles) {
             setTransferState('completed');
-            toast.success('Berhasil menerima semua file! Halaman akan dimuat ulang...');
+            toast.success('Berhasil menerima semua file! Klik download untuk menyimpan.');
             
-            // Auto download
-            receivedFiles.forEach(file => {
-              const a = document.createElement('a');
-              a.href = file.url;
-              a.download = file.name;
-              document.body.appendChild(a);
-              a.click();
-              document.body.removeChild(a);
-            });
-
+            // Note: Auto download disabled to wait for user click/refresh logic
+            
             setHistory(prev => [{
               id: Date.now(),
               type: 'received',
@@ -551,11 +546,6 @@ function App() {
               size: receivedSize,
               time: new Date().toLocaleTimeString()
             }, ...prev]);
-
-            // Auto refresh after download completes
-            setTimeout(() => {
-              window.location.reload();
-            }, 3000);
           }
         }
       }
@@ -1222,6 +1212,12 @@ function App() {
                       <a 
                         href={rf.url} 
                         download={rf.name} 
+                        onClick={() => {
+                          setIsDownloadClicked(true);
+                          setTimeout(() => {
+                            window.location.reload();
+                          }, 2000);
+                        }}
                         className="bg-blue-600 hover:bg-blue-500 text-white px-5 py-2 rounded-xl text-[10px] font-black uppercase tracking-wider shadow-lg shadow-blue-600/20 transition-all active:scale-95"
                       >
                         Download
