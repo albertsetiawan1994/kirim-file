@@ -97,18 +97,14 @@ function App() {
         newSocket.emit('join', {
           name: displayName,
           deviceType: getDeviceInfo().isMobile ? 'mobile' : 'desktop',
-          browser: getDeviceInfo().browser,
-          isLocal: true
+          browser: getDeviceInfo().browser
         });
       }
     });
 
     newSocket.on('users-list', (usersList) => {
       console.log('Received users list:', usersList);
-      const updatedUsers = usersList.filter(u => u.id !== newSocket.id).map(user => ({
-        ...user,
-        isLocal: user.isLocal ?? false
-      }));
+      const updatedUsers = usersList.filter(u => u.id !== newSocket.id);
       setUsers(updatedUsers);
     });
 
@@ -135,8 +131,7 @@ function App() {
         socket.emit('join', {
           name: displayName,
           deviceType: getDeviceInfo().isMobile ? 'mobile' : 'desktop',
-          browser: getDeviceInfo().browser,
-          isLocal: true
+          browser: getDeviceInfo().browser
         });
       }
     }
@@ -446,8 +441,7 @@ function App() {
         socket.emit('join', {
           name: newName,
           deviceType: getDeviceInfo().isMobile ? 'mobile' : 'desktop',
-          browser: getDeviceInfo().browser,
-          isLocal: true
+          browser: getDeviceInfo().browser
         });
       }
     }

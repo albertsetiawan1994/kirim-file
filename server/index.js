@@ -64,30 +64,48 @@ mdns.on('query', (query) => {
 // Signaling Server State
 const users = new Map();
 
+function broadcastUsersList() {
+  const usersArray = Array.from(users.values());
+  
+  // Send personalized list to each socket
+  io.sockets.sockets.forEach((socket) => {
+    const currentUser = users.get(socket.id);
+    if (!currentUser) return;
+
+    const personalizedList = usersArray.map(user => ({
+      id: user.id,
+      name: user.name,
+      deviceType: user.deviceType,
+      browser: user.browser,
+      joinedAt: user.joinedAt,
+      // Local if same public IP
+      isLocal: user.ip === currentUser.ip && user.id !== currentUser.id
+    }));
+
+    socket.emit('users-list', personalizedList);
+  });
+}
+
 io.on('connection', (socket) => {
   console.log('⚡ Client connected:', socket.id);
 
-  // Get client's IP address
+  // Get client's public IP address (handshake address)
   const clientIp = socket.handshake.address;
-  const isLocalClient = clientIp === '127.0.0.1' || clientIp === '::1' || clientIp.includes('192.168.') || clientIp.includes('10.');
 
   socket.on('join', (userData) => {
     const user = { 
       ...userData, 
       id: socket.id, 
       joinedAt: Date.now(),
-      ip: clientIp,
-      isLocal: isLocalClient
+      ip: clientIp
     };
     users.set(socket.id, user);
     
-    // Broadcast updated users list to ALL connected clients
-    io.emit('users-list', Array.from(users.values()));
-    console.log(`👤 User joined/updated: ${user.name} (${user.deviceType})`);
+    broadcastUsersList();
+    console.log(`👤 User joined/updated: ${user.name} (${user.deviceType}) from IP: ${clientIp}`);
   });
 
   socket.on('signal', ({ to, from, signal, pin }) => {
-    // Optional: Filter by PIN if provided
     const recipient = users.get(to);
     if (recipient) {
       io.to(to).emit('signal', { from, signal, pin });
@@ -98,7 +116,7 @@ io.on('connection', (socket) => {
     const user = users.get(socket.id);
     if (user) {
       users.delete(socket.id);
-      io.emit('users-list', Array.from(users.values()));
+      broadcastUsersList();
       console.log(`❌ User disconnected: ${user.name}`);
     }
   });
