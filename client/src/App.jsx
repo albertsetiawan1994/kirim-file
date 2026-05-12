@@ -475,7 +475,7 @@ function App() {
       // Handshake Retry Mechanism with Exponential Backoff
       if (transferStateRef.current === 'connecting' && retryAttempt < MAX_RETRIES && !isCancelledRef.current) {
         const backoffDelay = Math.pow(2, retryAttempt) * 1000;
-        console.log(`[Handshake] Gagal, mencoba ulang dalam ${backoffDelay}ms...`);
+        console.log(`[Handshake] Gagal, mencoba ulang (Retry ${retryAttempt + 1}) dalam ${backoffDelay}ms...`);
         setTimeout(() => startTransfer(retryAttempt + 1), backoffDelay);
         return;
       }
