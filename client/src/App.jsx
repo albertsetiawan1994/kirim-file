@@ -75,6 +75,8 @@ function App() {
   const socketRef = useRef(null);
   const isPausedRef = useRef(false);
   const isCancelledRef = useRef(false);
+  const retryCountRef = useRef(0);
+  const MAX_RETRIES = 3;
 
   // --- Socket Setup ---
   useEffect(() => {
@@ -186,8 +188,8 @@ function App() {
     speedRef.current.bytes += bytes;
     const timeDiff = (now - speedRef.current.lastTime) / 1000;
     
-    // Update speed every 0.5 seconds for better stability
-    if (timeDiff >= 0.5) {
+    // Update speed every 0.2 seconds for higher precision
+    if (timeDiff >= 0.2) {
       const bps = speedRef.current.bytes / timeDiff;
       // Sanity check for NaN, Infinity or zero timeDiff
       const validBps = isFinite(bps) ? bps : 0;
@@ -260,7 +262,7 @@ function App() {
             const isCompressed = false; 
 
             let offset = 0;
-              let chunkSize = MIN_CHUNK_SIZE;
+              let chunkSize = 65536; // Optimal minimum 64KB
               let lastProgressUpdate = 0;
 
               const sendChunk = async () => {
@@ -276,8 +278,11 @@ function App() {
                       return;
                     }
 
+                    // Strict backpressure management
                     if (peer.bufferSize > BUFFER_THRESHOLD) {
-                      setTimeout(sendChunk, 50);
+                      // Adaptive backoff based on buffer size
+                      const delay = Math.min(500, 50 + (peer.bufferSize / 1024));
+                      setTimeout(sendChunk, delay);
                       return;
                     }
 
@@ -293,35 +298,49 @@ function App() {
                       dataToSend = combined;
                     }
 
-                    peer.send(dataToSend);
+                    try {
+                      peer.send(dataToSend);
+                      retryCountRef.current = 0; // Reset on success
+                    } catch (sendErr) {
+                      if (retryCountRef.current < MAX_RETRIES) {
+                        retryCountRef.current++;
+                        const backoff = Math.pow(2, retryCountRef.current) * 100;
+                        console.warn(`Send failed, retrying in ${backoff}ms...`, sendErr);
+                        setTimeout(sendChunk, backoff);
+                        return;
+                      }
+                      throw sendErr;
+                    }
+
                     offset += currentChunk.byteLength;
                     const currentSpeed = updateSpeed(currentChunk.byteLength);
-                    
                     const currentProgress = (offset / buffer.byteLength) * 100;
                     
-                    // Throttle state updates and signaling to improve performance
-                    if (Date.now() - lastProgressUpdate > 200 || offset >= buffer.byteLength) {
+                    if (Date.now() - lastProgressUpdate > 150 || offset >= buffer.byteLength) {
                       setProgress(currentProgress);
                       setProcessedSize(offset);
-                      setEta(calculateETA(buffer.byteLength, offset, currentSpeed));
+                      const currentEta = calculateETA(buffer.byteLength, offset, currentSpeed);
+                      setEta(currentEta);
                       
-                      // Explicitly send speed and progress to receiver
                       peer.send(JSON.stringify({ 
                         type: 'progress', 
                         progress: currentProgress, 
                         processed: offset, 
-                        speed: currentSpeed 
+                        speed: currentSpeed,
+                        eta: currentEta
                       }));
                       lastProgressUpdate = Date.now();
                     }
 
                     if (offset >= buffer.byteLength) {
-                      // Send end-of-file marker for this specific file
                       peer.send(JSON.stringify({ type: 'control', action: 'eof', hash }));
                     }
 
-                    if (peer.bufferSize < BUFFER_THRESHOLD / 2) {
-                      chunkSize = Math.min(MAX_CHUNK_SIZE, chunkSize + 4096);
+                    // Adaptive chunk size adjustment
+                    if (peer.bufferSize < BUFFER_THRESHOLD / 4) {
+                      chunkSize = Math.min(MAX_CHUNK_SIZE, chunkSize + 8192);
+                    } else if (peer.bufferSize > BUFFER_THRESHOLD / 2) {
+                      chunkSize = Math.max(MIN_CHUNK_SIZE, chunkSize - 4096);
                     }
                   }
                   resolve();
@@ -498,8 +517,9 @@ function App() {
         if (message.type === 'progress') {
           setProgress(message.progress);
           setProcessedSize(message.processed);
-          // Set speed directly from sender to ensure sync
+          // Set speed and ETA directly from sender for perfect sync
           setTransferSpeed(message.speed);
+          if (message.eta) setEta(message.eta);
           return;
         }
       }
