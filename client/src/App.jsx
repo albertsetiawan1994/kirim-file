@@ -905,11 +905,6 @@ function App() {
                                 }`}>
                                   {user.deviceType}
                                 </span>
-                                <span className={`text-[9px] font-bold uppercase px-1.5 py-0.5 rounded-md ${
-                                  user.isLocal ? 'bg-green-500/20 text-green-400' : 'bg-orange-500/20 text-orange-400'
-                                }`}>
-                                  {user.isLocal ? 'Lokal' : 'Internet'}
-                                </span>
                               </div>
                             </div>
                             {targetUser?.id === user.id && (
