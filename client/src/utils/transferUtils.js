@@ -59,14 +59,19 @@ export const detectConnectionType = (candidate) => {
  * Estimasi sisa waktu transfer (ETA)
  */
 export const calculateETA = (totalSize, uploadedSize, speed) => {
-  if (speed <= 0) return '--:--';
+  if (speed <= 10) return '--:--'; // Jangan tampilkan ETA jika kecepatan terlalu rendah ( < 10B/s)
   const remaining = totalSize - uploadedSize;
   const seconds = Math.floor(remaining / speed);
   
+  if (seconds < 0) return '0s';
   if (seconds < 60) return `${seconds}s`;
   const minutes = Math.floor(seconds / 60);
   const remainingSeconds = seconds % 60;
-  return `${minutes}m ${remainingSeconds}s`;
+  
+  if (minutes < 60) return `${minutes}m ${remainingSeconds}s`;
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  return `${hours}h ${remainingMinutes}m`;
 };
 
 /**
@@ -90,10 +95,10 @@ export const decompressData = (data) => {
   }
 };
 
-// Ukuran chunk dioptimalkan untuk throughput ultra-tinggi (256KB - 1MB)
-export const MIN_CHUNK_SIZE = 262144; 
-export const MAX_CHUNK_SIZE = 1048576;
-export const BUFFER_THRESHOLD = 16 * 1024 * 1024; // 16MB buffer limit for ultra-speed streaming
+// Ukuran chunk dioptimalkan untuk throughput tinggi (64KB - 256KB)
+export const MIN_CHUNK_SIZE = 65536; 
+export const MAX_CHUNK_SIZE = 262144;
+export const BUFFER_THRESHOLD = 4 * 1024 * 1024; // 4MB buffer limit for high-speed streaming
 
 /**
  * Format ukuran file dengan presisi tinggi

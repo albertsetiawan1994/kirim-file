@@ -161,18 +161,6 @@ function App() {
     localStorage.setItem('transferHistory', JSON.stringify(history.slice(0, 50)));
   }, [history]);
 
-  // --- Auto ETA Calculation ---
-  useEffect(() => {
-    if (transferState === 'transferring' && currentFileMetadata && transferSpeed > 0) {
-      const currentEta = calculateETA(currentFileMetadata.size, processedBytes, transferSpeed);
-      setEta(currentEta);
-    } else if (transferState === 'completed') {
-      setEta('0s');
-    } else if (transferState === 'idle') {
-      setEta('--:--');
-    }
-  }, [transferSpeed, processedBytes, transferState, currentFileMetadata]);
-
   // --- Handlers ---
   const handleFileSelect = (e) => {
     const selectedFiles = Array.from(e.target.files);
@@ -221,11 +209,12 @@ function App() {
       const averageBps = window.reduce((a, b) => a + b, 0) / window.length;
       const finalSpeed = averageBps < 1 ? 0 : averageBps;
       
-      speedRef.current.currentSpeed = finalSpeed;
       setTransferSpeed(finalSpeed);
+      speedRef.current.currentSpeed = finalSpeed;
       
       speedRef.current.bytes = 0;
       speedRef.current.lastTime = now;
+      return finalSpeed;
     }
     return speedRef.current.currentSpeed;
   };
@@ -291,13 +280,13 @@ function App() {
             const isCompressed = false; 
 
             let offset = 0;
-              let chunkSize = MIN_CHUNK_SIZE; // Start with larger base chunk
+              let chunkSize = 131072; // Start with 128KB for high speed
               let lastProgressUpdate = 0;
 
               const sendChunk = async () => {
                 try {
-                  // Pipeline even more chunks for ultra throughput
-                  const pipelineSize = 8; 
+                  // Pipeline multiple chunks for higher throughput
+                  const pipelineSize = 4; 
                   
                   while (offset < buffer.byteLength) {
                     if (isCancelledRef.current || peer.destroyed) {
@@ -341,6 +330,9 @@ function App() {
                     if (Date.now() - lastProgressUpdate > 100 || offset >= buffer.byteLength) {
                       setProgress(currentProgress);
                       setProcessedSize(offset);
+                      const currentSpeed = speedRef.current.currentSpeed;
+                      const currentEta = calculateETA(buffer.byteLength, offset, currentSpeed);
+                      setEta(currentEta);
                       
                       peer.send(JSON.stringify({ 
                         type: 'progress', 
@@ -354,9 +346,9 @@ function App() {
                       peer.send(JSON.stringify({ type: 'control', action: 'eof', hash }));
                     }
 
-                    // More aggressive chunk growth
+                    // Faster chunk growth
                     if (peer.bufferSize < BUFFER_THRESHOLD / 2) {
-                      chunkSize = Math.min(MAX_CHUNK_SIZE, chunkSize + 65536);
+                      chunkSize = Math.min(MAX_CHUNK_SIZE, chunkSize + 16384);
                     }
                     
                     // Yield to UI thread occasionally
@@ -565,6 +557,12 @@ function App() {
           if (transferType === 'receiving') {
             setProgress(message.progress);
             setProcessedSize(message.processed);
+            
+            // Perbarui ETA juga di sini menggunakan kecepatan lokal saat ini
+            const currentSpeed = speedRef.current.currentSpeed;
+            if (currentSpeed > 0 && metadata) {
+              setEta(calculateETA(metadata.size, message.processed, currentSpeed));
+            }
           } else {
             // Sender updates from receiver's feedback if any (though currently one-way)
             setProgress(message.progress);
@@ -591,7 +589,7 @@ function App() {
       receivedSize += chunkSize;
       
       // Hitung kecepatan lokal secara real-time dari data biner yang masuk
-      updateSpeed(chunkSize);
+      const currentLocalSpeed = updateSpeed(chunkSize);
       
       if (metadata) {
         const currentProgress = (receivedSize / metadata.size) * 100;
@@ -602,6 +600,9 @@ function App() {
           if (now - lastUIUpdateTime > 100 || receivedSize >= metadata.size) {
             setProgress(currentProgress);
             setProcessedSize(receivedSize);
+            setTransferSpeed(currentLocalSpeed);
+            const newEta = calculateETA(metadata.size, receivedSize, currentLocalSpeed);
+            setEta(newEta);
             lastUIUpdateTime = now;
           }
         }
@@ -1204,7 +1205,7 @@ function App() {
 
                 <div className="flex flex-col gap-4 mb-8">
                   <div className="bg-white/5 rounded-2xl p-6 border border-white/5 text-center w-full">
-                    <p className="text-[10px] font-bold text-slate-500 uppercase mb-2">Kecepatan Kirim</p>
+                    <p className="text-[10px] font-bold text-slate-500 uppercase mb-2">Kecepatan</p>
                     <p className="text-3xl font-black text-blue-400">{formatSpeed(transferSpeed)}</p>
                   </div>
                   
