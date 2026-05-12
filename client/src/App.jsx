@@ -262,11 +262,14 @@ function App() {
             const isCompressed = false; 
 
             let offset = 0;
-              let chunkSize = 65536; // Optimal minimum 64KB
+              let chunkSize = 131072; // Start with 128KB for high speed
               let lastProgressUpdate = 0;
 
               const sendChunk = async () => {
                 try {
+                  // Pipeline multiple chunks for higher throughput
+                  const pipelineSize = 4; 
+                  
                   while (offset < buffer.byteLength) {
                     if (isCancelledRef.current || peer.destroyed) {
                       reject(new Error('Transfer dibatalkan'));
@@ -278,55 +281,44 @@ function App() {
                       return;
                     }
 
-                    // Strict backpressure management
                     if (peer.bufferSize > BUFFER_THRESHOLD) {
-                      // Adaptive backoff based on buffer size
-                      const delay = Math.min(500, 50 + (peer.bufferSize / 1024));
+                      const delay = Math.min(200, 20 + (peer.bufferSize / 1024 / 10));
                       setTimeout(sendChunk, delay);
                       return;
                     }
 
-                    const currentChunk = buffer.slice(offset, offset + chunkSize);
-                    let dataToSend = currentChunk;
+                    const promises = [];
+                    for (let p = 0; p < pipelineSize && offset < buffer.byteLength; p++) {
+                      const currentChunk = buffer.slice(offset, offset + chunkSize);
+                      let dataToSend = currentChunk;
 
-                    if (isSecure && encryptionKeyRef.current) {
-                      const iv = window.crypto.getRandomValues(new Uint8Array(12));
-                      const encrypted = await encryptChunk(encryptionKeyRef.current, currentChunk, iv);
-                      const combined = new Uint8Array(iv.length + encrypted.byteLength);
-                      combined.set(iv);
-                      combined.set(new Uint8Array(encrypted), iv.length);
-                      dataToSend = combined;
-                    }
-
-                    try {
-                      peer.send(dataToSend);
-                      retryCountRef.current = 0; // Reset on success
-                    } catch (sendErr) {
-                      if (retryCountRef.current < MAX_RETRIES) {
-                        retryCountRef.current++;
-                        const backoff = Math.pow(2, retryCountRef.current) * 100;
-                        console.warn(`Send failed, retrying in ${backoff}ms...`, sendErr);
-                        setTimeout(sendChunk, backoff);
-                        return;
+                      if (isSecure && encryptionKeyRef.current) {
+                        const iv = window.crypto.getRandomValues(new Uint8Array(12));
+                        const encrypted = await encryptChunk(encryptionKeyRef.current, currentChunk, iv);
+                        const combined = new Uint8Array(iv.length + encrypted.byteLength);
+                        combined.set(iv);
+                        combined.set(new Uint8Array(encrypted), iv.length);
+                        dataToSend = combined;
                       }
-                      throw sendErr;
-                    }
 
-                    offset += currentChunk.byteLength;
-                    const currentSpeed = updateSpeed(currentChunk.byteLength);
+                      peer.send(dataToSend);
+                      offset += currentChunk.byteLength;
+                      updateSpeed(currentChunk.byteLength);
+                    }
+                    
                     const currentProgress = (offset / buffer.byteLength) * 100;
                     
-                    if (Date.now() - lastProgressUpdate > 150 || offset >= buffer.byteLength) {
+                    if (Date.now() - lastProgressUpdate > 100 || offset >= buffer.byteLength) {
                       setProgress(currentProgress);
                       setProcessedSize(offset);
-                      const currentEta = calculateETA(buffer.byteLength, offset, currentSpeed);
+                      const currentEta = calculateETA(buffer.byteLength, offset, transferSpeed);
                       setEta(currentEta);
                       
                       peer.send(JSON.stringify({ 
                         type: 'progress', 
                         progress: currentProgress, 
                         processed: offset, 
-                        speed: currentSpeed,
+                        speed: transferSpeed,
                         eta: currentEta
                       }));
                       lastProgressUpdate = Date.now();
@@ -336,11 +328,14 @@ function App() {
                       peer.send(JSON.stringify({ type: 'control', action: 'eof', hash }));
                     }
 
-                    // Adaptive chunk size adjustment
-                    if (peer.bufferSize < BUFFER_THRESHOLD / 4) {
-                      chunkSize = Math.min(MAX_CHUNK_SIZE, chunkSize + 8192);
-                    } else if (peer.bufferSize > BUFFER_THRESHOLD / 2) {
-                      chunkSize = Math.max(MIN_CHUNK_SIZE, chunkSize - 4096);
+                    // Faster chunk growth
+                    if (peer.bufferSize < BUFFER_THRESHOLD / 2) {
+                      chunkSize = Math.min(MAX_CHUNK_SIZE, chunkSize + 16384);
+                    }
+                    
+                    // Yield to UI thread occasionally
+                    if (offset % (chunkSize * 10) === 0) {
+                      await new Promise(r => setTimeout(r, 0));
                     }
                   }
                   resolve();
