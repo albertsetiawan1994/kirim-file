@@ -875,7 +875,7 @@ function App() {
                           <Search size={24} className="text-blue-500/50" />
                         </div>
                         <p className="text-sm text-slate-400 font-medium">Scanning for devices...</p>
-                        <p className="text-[11px] text-slate-600 mt-1 px-10">Make sure others have KirimFile open on the same network or internet.</p>
+                        <p className="text-[11px] text-slate-600 mt-1 px-10">Make sure others have Kirim File open on the same network or internet.</p>
                       </div>
                     ) : (
                       users.map((user) => (
