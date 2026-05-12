@@ -334,7 +334,7 @@ function App() {
 
       if (!isCancelledRef.current) {
         setTransferState('completed');
-        toast.success('Semua file berhasil dikirim!');
+        toast.success('Semua file berhasil dikirim! Halaman akan dimuat ulang...');
         setHistory(prev => [{
           id: Date.now(),
           type: 'sent',
@@ -344,6 +344,11 @@ function App() {
           time: new Date().toLocaleTimeString()
         }, ...prev]);
         setFileList([]);
+
+        // Auto refresh for sender after completion
+        setTimeout(() => {
+          window.location.reload();
+        }, 3000);
       }
     });
 
@@ -394,7 +399,12 @@ function App() {
     setTransferState('idle');
     setProgress(0);
     setProcessedSize(0);
-    toast.error('Transfer dibatalkan');
+    toast.error('Transfer dibatalkan. Halaman akan dimuat ulang...');
+    
+    // Auto refresh after cancel
+    setTimeout(() => {
+      window.location.reload();
+    }, 1500);
   };
 
   const acceptTransfer = () => {
@@ -521,7 +531,7 @@ function App() {
           currentFilesCount++;
           if (currentFilesCount >= totalFiles) {
             setTransferState('completed');
-            toast.success('Berhasil menerima semua file!');
+            toast.success('Berhasil menerima semua file! Halaman akan dimuat ulang...');
             
             // Auto download
             receivedFiles.forEach(file => {
@@ -541,6 +551,11 @@ function App() {
               size: receivedSize,
               time: new Date().toLocaleTimeString()
             }, ...prev]);
+
+            // Auto refresh after download completes
+            setTimeout(() => {
+              window.location.reload();
+            }, 3000);
           }
         }
       }
