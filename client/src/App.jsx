@@ -553,7 +553,7 @@ function App() {
   // --- Render Components ---
   return (
     <div className="min-h-screen bg-[#0a0c10] text-slate-200 font-sans selection:bg-blue-500/30 overflow-x-hidden">
-      <Toaster position="top-right" />
+      <Toaster position="top-right" containerStyle={{ top: 20, right: 20 }} />
       {/* Background Decor */}
       <div className="fixed inset-0 overflow-hidden pointer-events-none">
         <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-blue-600/10 blur-[120px] rounded-full" />
@@ -1083,10 +1083,12 @@ function App() {
           {/* Incoming Transfer Request */}
           {incomingSignal && (
             <motion.div 
-              initial={{ opacity: 0, y: 100 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 100 }}
-              className="fixed bottom-8 right-8 z-[90] w-96"
+              initial={{ opacity: 0, y: 50, scale: 0.9 }} 
+              animate={{ opacity: 1, y: 0, scale: 1 }} 
+              exit={{ opacity: 0, scale: 0.9 }}
+              className="fixed inset-0 md:inset-auto md:bottom-8 md:right-8 z-[150] flex items-center justify-center md:block p-4"
             >
-              <div className="bg-slate-900 border-2 border-blue-500/50 p-6 rounded-[32px] shadow-2xl backdrop-blur-2xl">
+              <div className="bg-slate-900 border-2 border-blue-500/50 p-6 rounded-[32px] shadow-2xl backdrop-blur-2xl w-full max-w-[360px] md:w-96">
                 <div className="flex items-start gap-5 mb-6">
                   <div className="w-14 h-14 bg-blue-600 rounded-2xl flex items-center justify-center shadow-lg shadow-blue-600/20 ring-1 ring-white/20">
                     <Files size={28} className="text-white" />
