@@ -188,12 +188,16 @@ function App() {
     speedRef.current.bytes += bytes;
     const timeDiff = (now - speedRef.current.lastTime) / 1000;
     
-    // Update speed every 0.2 seconds for higher precision
-    if (timeDiff >= 0.2) {
+    if (timeDiff >= 0.25) { // Updated to 250ms for better balance
       const bps = speedRef.current.bytes / timeDiff;
-      // Sanity check for NaN, Infinity or zero timeDiff
       const validBps = isFinite(bps) ? bps : 0;
-      setTransferSpeed(validBps);
+      
+      // Moving average for smoother UI (80% old, 20% new)
+      setTransferSpeed(prev => {
+        if (prev === 0) return validBps;
+        return (prev * 0.8) + (validBps * 0.2);
+      });
+      
       speedRef.current.bytes = 0;
       speedRef.current.lastTime = now;
       return validBps;
@@ -308,6 +312,7 @@ function App() {
                     
                     const currentProgress = (offset / buffer.byteLength) * 100;
                     
+                    // Throttle sync messages (100ms) for high stability
                     if (Date.now() - lastProgressUpdate > 100 || offset >= buffer.byteLength) {
                       setProgress(currentProgress);
                       setProcessedSize(offset);
@@ -318,7 +323,7 @@ function App() {
                         type: 'progress', 
                         progress: currentProgress, 
                         processed: offset, 
-                        speed: transferSpeed,
+                        speed: transferSpeed, // Sending smoothed speed
                         eta: currentEta
                       }));
                       lastProgressUpdate = Date.now();
@@ -473,6 +478,8 @@ function App() {
 
     let isCompressed = false;
 
+    let lastProgressTime = Date.now();
+
     peer.on('data', async (data) => {
       const parsed = parseMessage(data);
 
@@ -510,6 +517,7 @@ function App() {
           return;
         }
         if (message.type === 'progress') {
+          lastProgressTime = Date.now();
           setProgress(message.progress);
           setProcessedSize(message.processed);
           // Set speed and ETA directly from sender for perfect sync
@@ -533,12 +541,19 @@ function App() {
 
       receivedChunks.push(chunkData);
       receivedSize += chunkData.byteLength || chunkData.length;
-      updateSpeed(chunkData.byteLength || chunkData.length);
+      
+      // Heartbeat: If no JSON progress update in 2s, fallback to local speed
+      const localSpeed = updateSpeed(chunkData.byteLength || chunkData.length);
+      if (Date.now() - lastProgressTime > 2000) {
+        setTransferSpeed(localSpeed);
+      }
       
       if (metadata) {
         const currentProgress = (receivedSize / metadata.size) * 100;
         setProgress(currentProgress);
-        setEta(calculateETA(metadata.size, receivedSize, transferSpeed));
+        setProcessedSize(receivedSize);
+        // Use sender speed if available, otherwise local fallback
+        setEta(calculateETA(metadata.size, receivedSize, transferSpeed || localSpeed));
       }
     });
 
