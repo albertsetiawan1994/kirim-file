@@ -31,7 +31,7 @@ import {
   decompressData
 } from './utils/transferUtils';
 
-const SIGNALING_URL = 'https://kirim-file-signaling.onrender.com'; 
+const SIGNALING_URL = 'https://kirim-file.onrender.com'; 
 
 function App() {
   // --- States ---
