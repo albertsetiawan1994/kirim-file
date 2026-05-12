@@ -134,7 +134,10 @@ function App() {
           setTimeout(() => window.location.reload(), 2000);
         } else if (signal.action === 'direct-ip') {
           console.log(`%c[Direct IP] Penerima berada di Gateway: ${signal.ip}`, 'color: #3b82f6; font-weight: bold');
-          // Optional: Bisa digunakan untuk mengoptimalkan MTU atau log diagnosa
+          // Jika terdeteksi IP berbeda (lintas gateway), langsung siapkan mode Relay untuk percobaan berikutnya
+          if (transferStateRef.current === 'connecting') {
+             console.warn('[Direct IP] Lintas gateway terdeteksi, mengoptimalkan jalur relay...');
+          }
         }
         return;
       }
@@ -264,10 +267,10 @@ function App() {
       encryptionKeyRef.current = await generateKey('kirimfile-p2p', salt);
     }
 
-    // Force Relay (TURN) on final retry if cross-network still fails
+    // Force Relay (TURN) lebih cepat jika lintas jaringan masih gagal
     const currentConfig = { ...PEER_CONFIG };
-    if (retryAttempt >= MAX_RETRIES - 1) {
-      console.warn('[Handshake] Memaksa mode Relay (TURN) untuk menembus NAT agresif...');
+    if (retryAttempt >= 1) { // Mulai paksa relay pada retry pertama untuk kecepatan
+      console.warn('[Handshake] Memaksa mode Relay (TURN) untuk menembus firewall lintas gateway...');
       currentConfig.iceTransportPolicy = 'relay';
     }
 

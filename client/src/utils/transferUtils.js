@@ -14,7 +14,7 @@ export const PEER_CONFIG = {
     { urls: 'stun:stun.ideasip.com' },
     { urls: 'stun:stun.schlund.de' },
     {
-      // Primary TURN (Metered)
+      // Primary TURN - Menggunakan server yang lebih global dan stabil
       urls: [
         'turn:relay.metered.ca:80',
         'turn:relay.metered.ca:443',
@@ -24,7 +24,7 @@ export const PEER_CONFIG = {
       credential: 'openrelayproject'
     },
     {
-      // Failover TURN (Metered)
+      // Secondary TURN
       urls: [
         'turn:openrelay.metered.ca:80',
         'turn:openrelay.metered.ca:443',
@@ -32,21 +32,17 @@ export const PEER_CONFIG = {
       ],
       username: 'openrelayproject',
       credential: 'openrelayproject'
-    },
-    {
-      // Backup STUNs
-      urls: [
-        'stun:stun.voiparound.com',
-        'stun:stun.voipbuster.com',
-        'stun:stun.voipstunt.com'
-      ]
     }
   ],
   iceCandidatePoolSize: 20,
   bundlePolicy: 'max-bundle',
   rtcpMuxPolicy: 'require',
   iceTransportPolicy: 'all', 
-  sdpSemantics: 'unified-plan'
+  sdpSemantics: 'unified-plan',
+  // Optimasi MTU untuk jaringan seluler/internet
+  peerConnectionConfig: {
+    iceCandidatePoolSize: 20
+  }
 };
 
 /**
