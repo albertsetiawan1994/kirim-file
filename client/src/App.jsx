@@ -223,9 +223,10 @@ function App() {
     return speedRef.current.currentSpeed;
   };
 
-  const startTransfer = async () => {
+  const startTransfer = async (retryAttempt = 0) => {
     if (fileList.length === 0 || !targetUser) return;
     
+    const startTime = Date.now();
     setTransferState('connecting');
     setTransferType('sending');
     isPausedRef.current = false;
@@ -242,7 +243,8 @@ function App() {
     const peer = new Peer({
       initiator: true,
       trickle: true,
-      config: PEER_CONFIG
+      config: PEER_CONFIG,
+      allowHalfTrickle: true
     });
 
     peerRef.current = peer;
@@ -256,6 +258,12 @@ function App() {
     });
 
     peer.on('connect', async () => {
+      const handshakeDuration = Date.now() - startTime;
+      console.log(`[Performance] Handshake Berhasil dalam ${handshakeDuration}ms`);
+      if (handshakeDuration < 500) {
+        console.log('%cHandshake Ultra Cepat (<500ms)', 'color: #10b981; font-weight: bold');
+      }
+
       setTransferState('transferring');
       peer.send(JSON.stringify({ type: 'batch-start', count: fileList.length, isSecure }));
 
@@ -417,8 +425,16 @@ function App() {
     });
 
     peer.on('error', (err) => {
-      console.error('Peer error:', err);
+      console.error(`Peer error (Attempt ${retryAttempt + 1}):`, err);
       
+      // Handshake Retry Mechanism with Exponential Backoff
+      if (transferState === 'connecting' && retryAttempt < MAX_RETRIES && !isCancelledRef.current) {
+        const backoffDelay = Math.pow(2, retryAttempt) * 1000;
+        console.log(`[Handshake] Gagal, mencoba ulang dalam ${backoffDelay}ms...`);
+        setTimeout(() => startTransfer(retryAttempt + 1), backoffDelay);
+        return;
+      }
+
       // Notify other peer via Signaling before refreshing
       if (socket && targetUser) {
         socket.emit('signal', { to: targetUser.id, from: me, signal: { type: 'control', action: 'force-refresh' } });
