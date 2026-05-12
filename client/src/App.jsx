@@ -70,7 +70,7 @@ function App() {
   // --- Refs ---
   const peerRef = useRef();
   const fileInputRef = useRef();
-  const speedRef = useRef({ bytes: 0, lastTime: Date.now(), window: [] });
+  const speedRef = useRef({ bytes: 0, lastTime: Date.now(), window: [], currentSpeed: 0 });
   const encryptionKeyRef = useRef(null);
   const socketRef = useRef(null);
   const isPausedRef = useRef(false);
@@ -207,14 +207,16 @@ function App() {
       if (window.length > 20) window.shift();
       
       const averageBps = window.reduce((a, b) => a + b, 0) / window.length;
+      const finalSpeed = averageBps < 1 ? 0 : averageBps;
       
-      setTransferSpeed(averageBps < 1 ? 0 : averageBps);
+      setTransferSpeed(finalSpeed);
+      speedRef.current.currentSpeed = finalSpeed;
       
       speedRef.current.bytes = 0;
       speedRef.current.lastTime = now;
-      return averageBps;
+      return finalSpeed;
     }
-    return transferSpeed;
+    return speedRef.current.currentSpeed;
   };
 
   const startTransfer = async () => {
@@ -328,7 +330,8 @@ function App() {
                     if (Date.now() - lastProgressUpdate > 100 || offset >= buffer.byteLength) {
                       setProgress(currentProgress);
                       setProcessedSize(offset);
-                      const currentEta = calculateETA(buffer.byteLength, offset, transferSpeed);
+                      const currentSpeed = speedRef.current.currentSpeed;
+                      const currentEta = calculateETA(buffer.byteLength, offset, currentSpeed);
                       setEta(currentEta);
                       
                       peer.send(JSON.stringify({ 
@@ -526,7 +529,7 @@ function App() {
           setProcessedSize(0);
           isCompressed = false;
           // Reset speed calculation for new file
-          speedRef.current = { bytes: 0, lastTime: Date.now(), window: [] };
+          speedRef.current = { bytes: 0, lastTime: Date.now(), window: [], currentSpeed: 0 };
           return;
         }
         if (message.type === 'control') {
@@ -1183,7 +1186,7 @@ function App() {
                     {formatSize(processedBytes)} / {currentFileMetadata ? formatSize(currentFileMetadata.size) : '--'}
                   </p>
                   <p className="text-[9px] text-blue-400/60 mt-1 font-bold uppercase tracking-[0.2em]">
-                    Estimasi Waktu: {eta}
+                    ETA: {eta}
                   </p>
                 </div>
 
