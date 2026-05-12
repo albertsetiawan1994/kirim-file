@@ -120,6 +120,14 @@ function App() {
     });
 
     newSocket.on('signal', ({ from, signal, pin }) => {
+      // Handle Control Signals (Cancel, etc) via Signaling Fallback
+      if (signal && signal.type === 'control') {
+        if (signal.action === 'cancel') {
+          handleCancelTransfer(false);
+        }
+        return;
+      }
+
       if (signal.type === 'offer') {
         setIncomingSignal({ from, signal, pin });
       } else if (peerRef.current) {
@@ -427,13 +435,22 @@ function App() {
 
   const handleCancelTransfer = (notifyPeer = true) => {
     isCancelledRef.current = true;
+    
+    // 1. Notify via Data Channel (Fastest)
     if (notifyPeer && peerRef.current) {
       try { peerRef.current.send(JSON.stringify({ type: 'control', action: 'cancel' })); } catch(e) {}
     }
+    
+    // 2. Notify via Signaling (Reliable Fallback)
+    if (notifyPeer && socket && targetUser) {
+      socket.emit('signal', { to: targetUser.id, from: me, signal: { type: 'control', action: 'cancel' } });
+    }
+
     if (peerRef.current) {
       peerRef.current.destroy();
       peerRef.current = null;
     }
+    
     setTransferState('idle');
     setProgress(0);
     setProcessedSize(0);
