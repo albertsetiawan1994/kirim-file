@@ -59,6 +59,9 @@ function App() {
   const [isEditingName, setIsEditingName] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [eta, setEta] = useState('--:--');
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [verifyPin, setVerifyPin] = useState('');
+  const [pinError, setPinError] = useState(false);
   
   // --- Refs ---
   const peerRef = useRef();
@@ -319,10 +322,18 @@ function App() {
   };
 
   const acceptTransfer = () => {
+    if (incomingSignal.pin && verifyPin !== incomingSignal.pin) {
+      setPinError(true);
+      toast.error('PIN yang dimasukkan salah!');
+      return;
+    }
+
     setTransferState('transferring');
     setTransferType('receiving');
     const { from, signal } = incomingSignal;
     setIncomingSignal(null);
+    setVerifyPin('');
+    setPinError(false);
 
     const peer = new Peer({
       initiator: false,
@@ -531,10 +542,65 @@ function App() {
             </div>
           </div>
           
-          <button className="md:hidden p-2 text-slate-400">
+          <button 
+            onClick={() => setIsMobileMenuOpen(true)}
+            className="md:hidden p-2 text-slate-400 hover:text-white transition-colors"
+          >
             <Menu size={24} />
           </button>
         </header>
+
+        {/* Mobile Sidebar */}
+        <AnimatePresence>
+          {isMobileMenuOpen && (
+            <>
+              <motion.div 
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                onClick={() => setIsMobileMenuOpen(false)}
+                className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[150] md:hidden"
+              />
+              <motion.div 
+                initial={{ x: '100%' }}
+                animate={{ x: 0 }}
+                exit={{ x: '100%' }}
+                transition={{ type: 'spring', damping: 25, stiffness: 200 }}
+                className="fixed top-0 right-0 bottom-0 w-[280px] bg-[#0d1117] border-l border-white/10 z-[151] md:hidden p-6 shadow-2xl"
+              >
+                <div className="flex items-center justify-between mb-8">
+                  <h2 className="text-xl font-bold text-white">Menu</h2>
+                  <button onClick={() => setIsMobileMenuOpen(false)} className="p-2 text-slate-400">
+                    <X size={24} />
+                  </button>
+                </div>
+                
+                <div className="space-y-4">
+                  <button 
+                    onClick={() => { setActiveTab('transfer'); setIsMobileMenuOpen(false); }}
+                    className={`w-full flex items-center gap-4 p-4 rounded-2xl font-bold transition-all ${activeTab === 'transfer' ? 'bg-blue-600 text-white' : 'bg-white/5 text-slate-400'}`}
+                  >
+                    <Share2 size={20} /> Transfer
+                  </button>
+                  <button 
+                    onClick={() => { setActiveTab('history'); setIsMobileMenuOpen(false); }}
+                    className={`w-full flex items-center gap-4 p-4 rounded-2xl font-bold transition-all ${activeTab === 'history' ? 'bg-blue-600 text-white' : 'bg-white/5 text-slate-400'}`}
+                  >
+                    <History size={20} /> History
+                  </button>
+                </div>
+
+                <div className="absolute bottom-8 left-6 right-6">
+                  <div className="p-4 bg-white/5 rounded-2xl border border-white/10">
+                    <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2">My Device</p>
+                    <p className="text-sm font-bold text-white truncate">{displayName || 'Anonymous'}</p>
+                    <p className="text-[10px] text-slate-600 mt-1">{me.slice(0, 12)}</p>
+                  </div>
+                </div>
+              </motion.div>
+            </>
+          )}
+        </AnimatePresence>
 
         <main className="grid grid-cols-1 lg:grid-cols-12 gap-8">
           {activeTab === 'transfer' && (
@@ -546,9 +612,6 @@ function App() {
                     <h2 className="text-sm font-bold text-white flex items-center gap-2">
                       <Globe size={18} className="text-blue-500" /> Nearby Devices
                     </h2>
-                    <button className="p-2 hover:bg-white/5 rounded-lg text-slate-500 transition-all active:rotate-180 duration-500">
-                      <RefreshCw size={16} />
-                    </button>
                   </div>
 
                   <div className="space-y-3 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
@@ -903,8 +966,22 @@ function App() {
                       <span className="font-bold text-blue-400">{users.find(u => u.id === incomingSignal.from)?.name || 'Someone'}</span> wants to send you files.
                     </p>
                     {incomingSignal.pin && (
-                      <div className="mt-2 flex items-center gap-1.5 text-[10px] font-bold text-green-500 bg-green-500/10 px-2 py-1 rounded-md w-fit">
-                        <Lock size={10} /> PIN PROTECTED
+                      <div className="mt-3 space-y-2">
+                        <div className="flex items-center gap-1.5 text-[10px] font-bold text-green-500 bg-green-500/10 px-2 py-1 rounded-md w-fit">
+                          <Lock size={10} /> PIN PROTECTED
+                        </div>
+                        <input 
+                          type="text"
+                          placeholder="Masukkan PIN"
+                          maxLength={4}
+                          value={verifyPin}
+                          onChange={(e) => {
+                            setVerifyPin(e.target.value);
+                            setPinError(false);
+                          }}
+                          className={`w-full bg-black/40 border ${pinError ? 'border-red-500' : 'border-white/10'} rounded-xl px-4 py-2 text-sm text-white placeholder:text-slate-600 focus:outline-none focus:border-blue-500/50 transition-colors`}
+                        />
+                        {pinError && <p className="text-[10px] text-red-500 font-bold">PIN tidak cocok!</p>}
                       </div>
                     )}
                   </div>
