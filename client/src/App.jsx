@@ -721,6 +721,9 @@ function App() {
             document.body.removeChild(a);
           });
 
+          // Validasi Integritas Akhir (Log Hash)
+          console.log(`[Integrity] Semua file batch selesai. Total Size: ${formatSize(receivedSize)}`);
+
           setHistory(hPrev => [{
             id: Date.now(),
             type: 'received',

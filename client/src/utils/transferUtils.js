@@ -12,6 +12,8 @@ export const PEER_CONFIG = {
     { urls: 'stun:stun2.l.google.com:19302' },
     { urls: 'stun:stun.voiparound.com' },
     { urls: 'stun:stun.schlund.de' },
+    { urls: 'stun:stun.ekiga.net' },
+    { urls: 'stun:stun.ideasip.com' },
     {
       urls: 'turn:openrelay.metered.ca:80',
       username: 'openrelayproject',
@@ -28,10 +30,10 @@ export const PEER_CONFIG = {
       credential: 'openrelayproject'
     }
   ],
-  iceCandidatePoolSize: 20, // Increased for faster candidate gathering
+  iceCandidatePoolSize: 20,
   bundlePolicy: 'max-bundle',
   rtcpMuxPolicy: 'require',
-  iceTransportPolicy: 'all',
+  iceTransportPolicy: 'all', // Mandatory for cross-network
   sdpSemantics: 'unified-plan'
 };
 
