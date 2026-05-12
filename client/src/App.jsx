@@ -255,14 +255,11 @@ function App() {
             const reader = new FileReader();
             reader.onload = async (e) => {
               let buffer = e.target.result;
-              
-              const { compressed, data: finalBuffer } = compressData(buffer);
-              if (compressed) {
-                peer.send(JSON.stringify({ type: 'control', action: 'compressed' }));
-                buffer = finalBuffer;
-              }
+            
+            // Kompresi dinonaktifkan sesuai permintaan user
+            const isCompressed = false; 
 
-              let offset = 0;
+            let offset = 0;
               let chunkSize = MIN_CHUNK_SIZE;
               let lastProgressUpdate = 0;
 
@@ -531,12 +528,13 @@ function App() {
     });
 
     const processReceivedFile = async () => {
-      if (!metadata || receivedChunks.length === 0) return;
+      // Capture current metadata before it might be reset
+      const fileMetadata = metadata;
+      if (!fileMetadata || receivedChunks.length === 0) return;
 
-      console.log('Processing received file:', metadata.name);
+      console.log('Processing received file:', fileMetadata.name);
       let finalBuffer = receivedChunks;
       if (isCompressed) {
-        // Gabungkan chunks dan dekompresi
         const combined = new Uint8Array(receivedSize);
         let offset = 0;
         receivedChunks.forEach(c => {
@@ -546,20 +544,21 @@ function App() {
         finalBuffer = [decompressData(combined.buffer)];
       }
 
-      const blob = new Blob(finalBuffer, { type: metadata.mime });
+      const blob = new Blob(finalBuffer, { type: fileMetadata.mime });
       const url = URL.createObjectURL(blob);
       
+      const fileName = fileMetadata.name;
+      const fileSize = fileMetadata.size;
+
       // Update received files state safely
       setReceivedFiles(prev => {
-        const newFiles = [...prev, { name: metadata.name, url, size: metadata.size }];
+        const newFiles = [...prev, { name: fileName, url, size: fileSize }];
         
-        // Auto download trigger if it's the last file or part of a batch
         currentFilesCount++;
         if (currentFilesCount >= totalFiles) {
           setTransferState('completed');
           toast.success('Berhasil menerima semua file! Halaman akan dimuat ulang...');
           
-          // Trigger all downloads at once
           newFiles.forEach(file => {
             const a = document.createElement('a');
             a.href = file.url;
