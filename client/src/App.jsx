@@ -520,9 +520,12 @@ function App() {
           lastProgressTime = Date.now();
           setProgress(message.progress);
           setProcessedSize(message.processed);
-          // Set speed and ETA directly from sender for perfect sync
-          setTransferSpeed(message.speed);
-          if (message.eta) setEta(message.eta);
+          // Only update speed from sender if we are the sender, 
+          // Receiver should rely on its own updateSpeed for real-time binary data
+          if (transferType === 'sending') {
+            setTransferSpeed(message.speed);
+            if (message.eta) setEta(message.eta);
+          }
           return;
         }
       }
@@ -542,18 +545,17 @@ function App() {
       receivedChunks.push(chunkData);
       receivedSize += chunkData.byteLength || chunkData.length;
       
-      // Heartbeat: If no JSON progress update in 2s, fallback to local speed
-      const localSpeed = updateSpeed(chunkData.byteLength || chunkData.length);
-      if (Date.now() - lastProgressTime > 2000) {
-        setTransferSpeed(localSpeed);
-      }
+      // Hitung kecepatan lokal secara real-time dari data biner yang masuk
+      const currentLocalSpeed = updateSpeed(chunkData.byteLength || chunkData.length);
       
       if (metadata) {
         const currentProgress = (receivedSize / metadata.size) * 100;
         setProgress(currentProgress);
         setProcessedSize(receivedSize);
-        // Use sender speed if available, otherwise local fallback
-        setEta(calculateETA(metadata.size, receivedSize, transferSpeed || localSpeed));
+        
+        // Prioritaskan kecepatan lokal di sisi penerima agar tidak 0B/s jika pesan JSON terhambat
+        setTransferSpeed(currentLocalSpeed);
+        setEta(calculateETA(metadata.size, receivedSize, currentLocalSpeed));
       }
     });
 
