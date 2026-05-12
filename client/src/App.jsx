@@ -161,6 +161,18 @@ function App() {
     localStorage.setItem('transferHistory', JSON.stringify(history.slice(0, 50)));
   }, [history]);
 
+  // --- Auto ETA Calculation ---
+  useEffect(() => {
+    if (transferState === 'transferring' && currentFileMetadata && transferSpeed > 0) {
+      const currentEta = calculateETA(currentFileMetadata.size, processedBytes, transferSpeed);
+      setEta(currentEta);
+    } else if (transferState === 'completed') {
+      setEta('0s');
+    } else if (transferState === 'idle') {
+      setEta('--:--');
+    }
+  }, [transferSpeed, processedBytes, transferState, currentFileMetadata]);
+
   // --- Handlers ---
   const handleFileSelect = (e) => {
     const selectedFiles = Array.from(e.target.files);
@@ -209,12 +221,11 @@ function App() {
       const averageBps = window.reduce((a, b) => a + b, 0) / window.length;
       const finalSpeed = averageBps < 1 ? 0 : averageBps;
       
-      setTransferSpeed(finalSpeed);
       speedRef.current.currentSpeed = finalSpeed;
+      setTransferSpeed(finalSpeed);
       
       speedRef.current.bytes = 0;
       speedRef.current.lastTime = now;
-      return finalSpeed;
     }
     return speedRef.current.currentSpeed;
   };
@@ -330,9 +341,6 @@ function App() {
                     if (Date.now() - lastProgressUpdate > 100 || offset >= buffer.byteLength) {
                       setProgress(currentProgress);
                       setProcessedSize(offset);
-                      const currentSpeed = speedRef.current.currentSpeed;
-                      const currentEta = calculateETA(buffer.byteLength, offset, currentSpeed);
-                      setEta(currentEta);
                       
                       peer.send(JSON.stringify({ 
                         type: 'progress', 
@@ -594,9 +602,6 @@ function App() {
           if (now - lastUIUpdateTime > 100 || receivedSize >= metadata.size) {
             setProgress(currentProgress);
             setProcessedSize(receivedSize);
-            const currentSpeed = speedRef.current.currentSpeed;
-            setTransferSpeed(currentSpeed);
-            setEta(calculateETA(metadata.size, receivedSize, currentSpeed));
             lastUIUpdateTime = now;
           }
         }
