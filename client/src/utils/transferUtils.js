@@ -57,21 +57,27 @@ export const detectConnectionType = (candidate) => {
 
 /**
  * Estimasi sisa waktu transfer (ETA)
+ * Mengembalikan objek dengan label teks dan nilai detik murni
  */
 export const calculateETA = (totalSize, uploadedSize, speed) => {
-  if (speed <= 0) return '--:--';
+  if (speed <= 0) return { text: '--:--', seconds: 0 };
   const remaining = totalSize - uploadedSize;
-  const seconds = Math.floor(remaining / speed);
+  const totalSeconds = Math.floor(remaining / speed);
   
-  if (seconds < 0) return '0s';
-  if (seconds < 60) return `${seconds}s`;
-  const minutes = Math.floor(seconds / 60);
-  const remainingSeconds = seconds % 60;
-  
-  if (minutes < 60) return `${minutes}m ${remainingSeconds}s`;
-  const hours = Math.floor(minutes / 60);
-  const remainingMinutes = minutes % 60;
-  return `${hours}h ${remainingMinutes}m`;
+  let text = '';
+  if (totalSeconds < 0) text = '0s';
+  else if (totalSeconds < 60) text = `${totalSeconds}s`;
+  else if (totalSeconds < 3600) {
+    const minutes = Math.floor(totalSeconds / 60);
+    const remainingSeconds = totalSeconds % 60;
+    text = `${minutes}m ${remainingSeconds}s`;
+  } else {
+    const hours = Math.floor(totalSeconds / 3600);
+    const remainingMinutes = Math.floor((totalSeconds % 3600) / 60);
+    text = `${hours}h ${remainingMinutes}m`;
+  }
+
+  return { text, seconds: totalSeconds };
 };
 
 /**

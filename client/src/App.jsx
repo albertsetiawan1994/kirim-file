@@ -73,9 +73,10 @@ function App() {
   const speedRef = useRef({ bytes: 0, lastTime: Date.now(), window: [], currentSpeed: 0 });
   const encryptionKeyRef = useRef(null);
   const socketRef = useRef(null);
-  const isPausedRef = useRef(false);
-  const isCancelledRef = useRef(false);
-  const retryCountRef = useRef(0);
+    const isPausedRef = useRef(false);
+    const isCancelledRef = useRef(false);
+    const lastEtaValueRef = useRef(0); // Store ETA in seconds for comparison
+    const retryCountRef = useRef(0);
   const MAX_RETRIES = 3;
 
   // --- Socket Setup ---
@@ -334,8 +335,14 @@ function App() {
                       setProgress(currentProgress);
                       setProcessedSize(offset);
                       const currentSpeed = speedRef.current.currentSpeed;
-                      const currentEta = calculateETA(buffer.byteLength, offset, currentSpeed);
-                      setEta(currentEta);
+                      const etaResult = calculateETA(buffer.byteLength, offset, currentSpeed);
+                      
+                      // Tracking & Logging performa estimasi
+                      if (Math.abs(etaResult.seconds - lastEtaValueRef.current) > 10 && lastEtaValueRef.current !== 0) {
+                        console.log(`[Performance] ETA Berubah Signifikan: ${lastEtaValueRef.current}s -> ${etaResult.seconds}s (Speed: ${formatSpeed(currentSpeed)})`);
+                      }
+                      lastEtaValueRef.current = etaResult.seconds;
+                      setEta(etaResult.text);
                       
                       peer.send(JSON.stringify({ 
                         type: 'progress', 
@@ -586,8 +593,15 @@ function App() {
             // Kita hitung ulang ETA di sini menggunakan kecepatan lokal.
             const currentSpeed = speedRef.current.currentSpeed;
             if (currentSpeed > 0 && metadata) {
-              const localEta = calculateETA(metadata.size, message.processed, currentSpeed);
-              if (localEta !== '--:--') setEta(localEta);
+              const etaResult = calculateETA(metadata.size, message.processed, currentSpeed);
+              if (etaResult.text !== '--:--') {
+                // Notifikasi log jika estimasi berubah signifikan di sisi penerima
+                if (Math.abs(etaResult.seconds - lastEtaValueRef.current) > 15 && lastEtaValueRef.current !== 0) {
+                   console.warn(`[Network] Kondisi jaringan berubah, ETA diperbarui: ${etaResult.text}`);
+                }
+                lastEtaValueRef.current = etaResult.seconds;
+                setEta(etaResult.text);
+              }
             }
           } else {
             // Sender updates from receiver's feedback if any (though currently one-way)
@@ -627,8 +641,11 @@ function App() {
             setProgress(currentProgress);
             setProcessedSize(receivedSize);
             setTransferSpeed(currentLocalSpeed);
-            const newEta = calculateETA(metadata.size, receivedSize, currentLocalSpeed);
-            if (newEta !== '--:--') setEta(newEta);
+            const etaResult = calculateETA(metadata.size, receivedSize, currentLocalSpeed);
+            if (etaResult.text !== '--:--') {
+              lastEtaValueRef.current = etaResult.seconds;
+              setEta(etaResult.text);
+            }
             lastUIUpdateTime = now;
           }
         }
@@ -1253,10 +1270,15 @@ function App() {
                 </div>
 
                 <div className="flex flex-col gap-4 mb-8">
-                  <div className="bg-white/5 rounded-2xl p-6 border border-white/5 text-center w-full">
-                    <p className="text-[10px] font-bold text-slate-500 uppercase mb-2">Kecepatan</p>
-                    <p className="text-3xl font-black text-blue-400">{formatSpeed(transferSpeed)}</p>
-                  </div>
+          <div className="bg-white/5 rounded-2xl p-6 border border-white/5 text-center w-full relative group">
+            <p className="text-[10px] font-bold text-slate-500 uppercase mb-2">Kecepatan</p>
+            <p className="text-3xl font-black text-blue-400">{formatSpeed(transferSpeed)}</p>
+            {transferSpeed < 1024 * 10 && transferState === 'transferring' && (
+              <div className="absolute top-2 right-2 flex items-center gap-1 text-[8px] font-bold text-yellow-500 animate-pulse bg-yellow-500/10 px-1.5 py-0.5 rounded">
+                <AlertTriangle size={8} /> Jaringan Tidak Stabil
+              </div>
+            )}
+          </div>
                   
                   <div className="flex gap-3">
                     <button 
