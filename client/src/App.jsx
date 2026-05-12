@@ -273,19 +273,29 @@ function App() {
     peer.on('signal', (signal) => {
       if (signal.candidate) {
         const mode = detectConnectionType(signal.candidate.candidate);
+        console.log(`[ICE Candidate] Found: ${mode}`);
         setConnectionMode(mode);
       }
       emitSignal(socket, targetUser.id, me, signal, { pin: roomPin });
     });
 
     // Proactive ICE Connection State Monitoring
+    let renegotiateTimeout = null;
     if (peer._pc) {
       peer._pc.oniceconnectionstatechange = () => {
         const state = peer._pc.iceConnectionState;
         console.log(`[ICE State] ${state}`);
+        
         if (state === 'failed' || state === 'disconnected') {
-          console.warn('[ICE] Koneksi bermasalah, mencoba renegotiate...');
-          peer.renegotiate();
+          console.warn('[ICE] Koneksi terhambat, menyiapkan negosiasi ulang...');
+          if (renegotiateTimeout) clearTimeout(renegotiateTimeout);
+          // Give it a 2s window to recover before forcing renegotiation
+          renegotiateTimeout = setTimeout(() => {
+            if (peer._pc && (peer._pc.iceConnectionState === 'failed' || peer._pc.iceConnectionState === 'disconnected')) {
+              console.log('[ICE] Menjalankan renegotiate...');
+              peer.renegotiate();
+            }
+          }, 2000);
         }
       };
     }
@@ -579,21 +589,29 @@ function App() {
     setProcessedSize(0);
 
     peer.on('signal', (sig) => {
-      console.log(`[Accept Signal] type: ${sig?.type}`);
       if (sig.candidate) {
         const mode = detectConnectionType(sig.candidate.candidate);
+        console.log(`[Accept ICE Candidate] Found: ${mode}`);
         setConnectionMode(mode);
       }
       emitSignal(socket, from, me, sig);
     });
 
     // Proactive ICE Connection State Monitoring for Receiver
+    let receiverRenegotiateTimeout = null;
     if (peer._pc) {
       peer._pc.oniceconnectionstatechange = () => {
         const state = peer._pc.iceConnectionState;
         console.log(`[Receiver ICE State] ${state}`);
         if (state === 'failed' || state === 'disconnected') {
-           peer.renegotiate();
+           console.warn('[Receiver ICE] Koneksi terhambat, menyiapkan negosiasi ulang...');
+           if (receiverRenegotiateTimeout) clearTimeout(receiverRenegotiateTimeout);
+           receiverRenegotiateTimeout = setTimeout(() => {
+             if (peer._pc && (peer._pc.iceConnectionState === 'failed' || peer._pc.iceConnectionState === 'disconnected')) {
+               console.log('[Receiver ICE] Menjalankan renegotiate...');
+               peer.renegotiate();
+             }
+           }, 2000);
         }
       };
     }
@@ -1177,7 +1195,7 @@ function App() {
 
                       <button
                         disabled={fileList.length === 0 || !targetUser || transferState !== 'idle'}
-                        onClick={startTransfer}
+                        onClick={() => startTransfer(0)}
                         className={`group relative w-full py-4 rounded-2xl font-bold text-lg transition-all duration-300 overflow-hidden ${
                           fileList.length === 0 || !targetUser || transferState !== 'idle'
                             ? 'bg-slate-800 text-slate-500 cursor-not-allowed border border-white/5'
