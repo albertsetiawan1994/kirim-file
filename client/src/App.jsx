@@ -348,9 +348,8 @@ function App() {
 
         // Auto refresh for sender after completion
         setTimeout(() => {
-          // Check if still on the same page and transfer is idle/completed
           window.location.reload();
-        }, 5000);
+        }, 3000);
       }
     });
 
@@ -534,10 +533,18 @@ function App() {
           currentFilesCount++;
           if (currentFilesCount >= totalFiles) {
             setTransferState('completed');
-            toast.success('Berhasil menerima semua file! Klik download untuk menyimpan.');
+            toast.success('Berhasil menerima semua file! Halaman akan dimuat ulang...');
             
-            // Note: Auto download disabled to wait for user click/refresh logic
-            
+            // Auto download
+            receivedFiles.forEach(file => {
+              const a = document.createElement('a');
+              a.href = file.url;
+              a.download = file.name;
+              document.body.appendChild(a);
+              a.click();
+              document.body.removeChild(a);
+            });
+
             setHistory(prev => [{
               id: Date.now(),
               type: 'received',
@@ -546,6 +553,11 @@ function App() {
               size: receivedSize,
               time: new Date().toLocaleTimeString()
             }, ...prev]);
+
+            // Auto refresh after download completes
+            setTimeout(() => {
+              window.location.reload();
+            }, 3000);
           }
         }
       }
@@ -605,34 +617,6 @@ function App() {
             <div>
               <div className="flex items-center gap-2">
                 <h1 className="text-xl font-bold tracking-tight text-white">KirimFile<span className="text-blue-500">.</span></h1>
-                {/* Mobile Name Display & Edit */}
-                <div className="md:hidden flex items-center gap-2 bg-white/5 px-2 py-1 rounded-lg border border-white/10">
-                  {isEditingName ? (
-                    <div className="flex items-center gap-1">
-                      <input 
-                        autoFocus
-                        type="text"
-                        value={tempName}
-                        onChange={(e) => setTempName(e.target.value)}
-                        onKeyDown={(e) => e.key === 'Enter' && handleSaveName()}
-                        className="bg-black/40 border border-blue-500/50 rounded-md px-2 py-0.5 text-[10px] text-white outline-none w-20"
-                      />
-                      <button onClick={handleSaveName} className="text-blue-500">
-                        <CheckCircle size={12} />
-                      </button>
-                    </div>
-                  ) : (
-                    <>
-                      <span className="text-[10px] font-bold text-slate-300 truncate max-w-[80px]">{displayName || 'User'}</span>
-                      <button 
-                        onClick={() => {setIsEditingName(true); setTempName(displayName);}}
-                        className="text-slate-500 hover:text-blue-400"
-                      >
-                        <Edit2 size={10} />
-                      </button>
-                    </>
-                  )}
-                </div>
               </div>
               <div className="flex items-center gap-2 text-[10px] font-medium uppercase tracking-wider">
                 <span className={`flex h-1.5 w-1.5 rounded-full ${isConnected ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} />
@@ -680,7 +664,6 @@ function App() {
                     <>
                       <div className="flex flex-col items-end">
                         <p className="text-xs font-semibold text-white">{displayName || 'Anonymous'}</p>
-                        <p className="text-[10px] text-slate-500 font-mono opacity-60">ID: {me.slice(0, 6)}</p>
                       </div>
                       <button 
                         onClick={() => {setIsEditingName(true); setTempName(displayName);}}
@@ -746,8 +729,33 @@ function App() {
                 <div className="absolute bottom-8 left-6 right-6">
                   <div className="p-4 bg-white/5 rounded-2xl border border-white/10">
                     <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2">My Device</p>
-                    <p className="text-sm font-bold text-white truncate">{displayName || 'Anonymous'}</p>
-                    <p className="text-[10px] text-slate-600 mt-1">{me.slice(0, 12)}</p>
+                    <div className="flex items-center justify-between group">
+                      {isEditingName ? (
+                        <div className="flex items-center gap-1 w-full">
+                          <input 
+                            autoFocus
+                            type="text"
+                            value={tempName}
+                            onChange={(e) => setTempName(e.target.value)}
+                            onKeyDown={(e) => e.key === 'Enter' && handleSaveName()}
+                            className="bg-black/40 border border-blue-500/50 rounded-md px-2 py-1 text-sm text-white outline-none flex-1"
+                          />
+                          <button onClick={handleSaveName} className="text-blue-500">
+                            <CheckCircle size={18} />
+                          </button>
+                        </div>
+                      ) : (
+                        <>
+                          <p className="text-sm font-bold text-white truncate flex-1">{displayName || 'Anonymous'}</p>
+                          <button 
+                            onClick={() => {setIsEditingName(true); setTempName(displayName);}}
+                            className="text-slate-500 hover:text-blue-400 p-1"
+                          >
+                            <Edit2 size={14} />
+                          </button>
+                        </>
+                      )}
+                    </div>
                   </div>
                 </div>
               </motion.div>
