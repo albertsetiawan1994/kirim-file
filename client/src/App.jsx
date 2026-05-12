@@ -523,6 +523,8 @@ function App() {
           setProgress(0);
           setProcessedSize(0);
           isCompressed = false;
+          // Reset speed calculation for new file
+          speedRef.current = { bytes: 0, lastTime: Date.now() };
           return;
         }
         if (message.type === 'control') {
@@ -544,11 +546,14 @@ function App() {
         }
         if (message.type === 'progress') {
           lastProgressTime = Date.now();
-          setProgress(message.progress);
-          setProcessedSize(message.processed);
-          // Only update speed from sender if we are the sender, 
-          // Receiver should rely on its own updateSpeed for real-time binary data
-          if (transferType === 'sending') {
+          if (transferType === 'receiving') {
+            // Receiver updates progress bar from sender's authoritative data
+            setProgress(message.progress);
+            setProcessedSize(message.processed);
+          } else {
+            // Sender updates from receiver's feedback if any
+            setProgress(message.progress);
+            setProcessedSize(message.processed);
             setTransferSpeed(message.speed);
             if (message.eta) setEta(message.eta);
           }
@@ -569,19 +574,21 @@ function App() {
       }
 
       receivedChunks.push(chunkData);
-      receivedSize += chunkData.byteLength || chunkData.length;
+      const chunkSize = chunkData.byteLength || chunkData.length;
+      receivedSize += chunkSize;
       
       // Hitung kecepatan lokal secara real-time dari data biner yang masuk
-      const currentLocalSpeed = updateSpeed(chunkData.byteLength || chunkData.length);
+      const currentLocalSpeed = updateSpeed(chunkSize);
       
       if (metadata) {
         const currentProgress = (receivedSize / metadata.size) * 100;
-        setProgress(currentProgress);
-        setProcessedSize(receivedSize);
-        
-        // Prioritaskan kecepatan lokal di sisi penerima agar tidak 0B/s jika pesan JSON terhambat
-        setTransferSpeed(currentLocalSpeed);
-        setEta(calculateETA(metadata.size, receivedSize, currentLocalSpeed));
+        // Receiver relies on local binary flow for speed and ETA
+        if (transferType === 'receiving') {
+          setProgress(currentProgress);
+          setProcessedSize(receivedSize);
+          setTransferSpeed(currentLocalSpeed);
+          setEta(calculateETA(metadata.size, receivedSize, currentLocalSpeed));
+        }
       }
     });
 
@@ -1178,6 +1185,9 @@ function App() {
                   </p>
                   <p className="text-[10px] text-slate-500 mt-2 font-bold uppercase tracking-widest">
                     {formatSize(processedBytes)} / {currentFileMetadata ? formatSize(currentFileMetadata.size) : '--'}
+                  </p>
+                  <p className="text-[9px] text-blue-400/60 mt-1 font-bold uppercase tracking-[0.2em]">
+                    Estimasi Waktu: {eta}
                   </p>
                 </div>
 
