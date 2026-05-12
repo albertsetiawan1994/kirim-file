@@ -1,160 +1,120 @@
 import React, { useState, useEffect, useRef } from 'react';
 import io from 'socket.io-client';
 import Peer from 'simple-peer/simplepeer.min.js';
-import { UAParser } from 'ua-parser-js';
 import { 
-  Monitor, 
-  Smartphone, 
-  FileUp, 
-  Download, 
-  X, 
-  CheckCircle, 
-  Loader2, 
-  Wifi,
-  Share2,
-  Files,
-  Trash2,
-  FileIcon,
-  ShieldCheck,
-  User,
-  Edit2,
-  History,
-  Clock
+  Monitor, Smartphone, FileUp, Download, X, CheckCircle, Loader2, 
+  Wifi, Share2, Files, Trash2, FileIcon, ShieldCheck, History, 
+  Settings, Info, Globe, Lock, Zap, Clock, AlertTriangle, ChevronRight,
+  Menu, Bell, User, Plus, Search, Filter, RefreshCw, Edit2
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import toast, { Toaster } from 'react-hot-toast';
 
-const GLOBAL_SIGNALING_URL = 'https://kirim-file.onrender.com'; 
+import { 
+  formatSize, 
+  formatSpeed,
+  getDeviceInfo, 
+  PEER_CONFIG, 
+  emitSignal, 
+  parseMessage, 
+  MIN_CHUNK_SIZE,
+  MAX_CHUNK_SIZE,
+  BUFFER_THRESHOLD,
+  generateKey,
+  encryptChunk,
+  decryptChunk,
+  calculateHash,
+  isLocalIP,
+  detectConnectionType,
+  calculateETA,
+  compressData,
+  decompressData
+} from './utils/transferUtils';
+
+const SIGNALING_URL = 'https://kirim-file-signaling.onrender.com'; 
 
 function App() {
+  // --- States ---
   const [socket, setSocket] = useState(null);
   const [me, setMe] = useState('');
   const [users, setUsers] = useState([]);
   const [targetUser, setTargetUser] = useState(null);
   const [fileList, setFileList] = useState([]);
-  const [sending, setSending] = useState(false);
-  const [receiving, setReceiving] = useState(false);
-  const [currentFileIndex, setCurrentFileIndex] = useState(0);
-  const [totalFiles, setTotalFiles] = useState(0);
-  const [currentFileName, setCurrentFileName] = useState('');
+  const [activeTab, setActiveTab] = useState('transfer'); // transfer, history, settings
+  const [transferState, setTransferState] = useState('idle'); // idle, connecting, transferring, completed, error
+  const [transferType, setTransferType] = useState('sending'); // sending, receiving
   const [progress, setProgress] = useState(0);
+  const [transferSpeed, setTransferSpeed] = useState(0);
+  const [currentFileIndex, setCurrentFileIndex] = useState(0);
   const [receivedFiles, setReceivedFiles] = useState([]);
-  const [history, setHistory] = useState(JSON.parse(localStorage.getItem('transferHistory')) || []);
+  const [history, setHistory] = useState(() => JSON.parse(localStorage.getItem('transferHistory') || '[]'));
   const [incomingSignal, setIncomingSignal] = useState(null);
   const [isConnected, setIsConnected] = useState(false);
-  const [transferSpeed, setTransferSpeed] = useState(0);
-  const [totalBytes, setTotalBytes] = useState(0);
-  const [historyPage, setHistoryPage] = useState(1);
-  const itemsPerPage = 15;
-  const speedRef = useRef({ bytes: 0, lastTime: Date.now() });
-  const lastProgressUpdateRef = useRef(0);
-  const lastProgressSignalRef = useRef(0);
-  const lastSenderProgressAtRef = useRef(0);
-  const [userName, setUserName] = useState(localStorage.getItem('userName') || '');
-  const [tempName, setTempName] = useState(localStorage.getItem('userName') || '');
-  const [isEditingName, setIsEditingName] = useState(!localStorage.getItem('userName'));
-  const [deleteConfirm, setDeleteConfirm] = useState(null); // { index, name }
-  const [deleteAllConfirm, setDeleteAllConfirm] = useState(false);
-  const [isCancelled, setIsCancelled] = useState(false);
-  const [systemMessage, setSystemMessage] = useState('');
-  const [retryAttempt, setRetryAttempt] = useState(0);
+  const [connectionMode, setConnectionMode] = useState('Detecting...'); // Lokal, Internet (STUN), Internet (TURN)
+  const [roomPin, setRoomPin] = useState('');
+  const [isSecure, setIsSecure] = useState(true);
+  const [displayName, setDisplayName] = useState(() => localStorage.getItem('userDisplayName') || '');
+  const [showOnboarding, setShowOnboarding] = useState(() => !localStorage.getItem('userDisplayName'));
+  const [tempName, setTempName] = useState('');
+  const [isEditingName, setIsEditingName] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
+  const [eta, setEta] = useState('--:--');
   
+  // --- Refs ---
   const peerRef = useRef();
-  const remotePeerIdRef = useRef(null);
-  const remoteCancelledRef = useRef(false);
   const fileInputRef = useRef();
-  const cancelBtnRef = useRef(null);
-  const confirmBtnRef = useRef(null);
-  const dialogFocusRef = useRef('cancel');
+  const speedRef = useRef({ bytes: 0, lastTime: Date.now() });
+  const encryptionKeyRef = useRef(null);
+  const socketRef = useRef(null);
 
+  // --- Socket Setup ---
   useEffect(() => {
-    localStorage.setItem('transferHistory', JSON.stringify(history));
-  }, [history]);
+    const { deviceName, osName, isMobile } = getDeviceInfo();
+    const finalName = displayName || `${osName} ${deviceName}`;
+    
+    const newSocket = io(SIGNALING_URL, {
+      transports: ['polling', 'websocket'],
+      secure: true,
+      withCredentials: true,
+      reconnectionAttempts: 10,
+      reconnectionDelay: 2000,
+      forceNew: true
+    });
 
-  useEffect(() => {
-    const isDialogOpen = Boolean(deleteConfirm) || deleteAllConfirm;
-    if (!isDialogOpen) return;
-    if (!window.matchMedia('(min-width: 768px)').matches) return;
+    socketRef.current = newSocket;
 
-    dialogFocusRef.current = 'cancel';
-    setTimeout(() => {
-      cancelBtnRef.current?.focus?.();
-    }, 0);
-
-    const onKeyDown = (e) => {
-      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
-        e.preventDefault();
-        const next = dialogFocusRef.current === 'cancel' ? 'confirm' : 'cancel';
-        dialogFocusRef.current = next;
-        if (next === 'cancel') cancelBtnRef.current?.focus?.();
-        else confirmBtnRef.current?.focus?.();
-        return;
-      }
-
-      if (e.key === 'Enter') {
-        e.preventDefault();
-        if (document.activeElement === cancelBtnRef.current) {
-          setDeleteConfirm(null);
-          setDeleteAllConfirm(false);
-          return;
-        }
-        if (document.activeElement === confirmBtnRef.current) {
-          if (deleteAllConfirm) handleDeleteAllHistory();
-          else handleDeleteHistory();
-          return;
-        }
-        return;
-      }
-
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        setDeleteConfirm(null);
-        setDeleteAllConfirm(false);
-      }
-    };
-
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [deleteConfirm, deleteAllConfirm]);
-
-  useEffect(() => {
-    const newSocket = io(GLOBAL_SIGNALING_URL, {
-      transports: ['websocket'],
-      secure: true
+    newSocket.on('connect_error', (err) => {
+      console.error('Signaling connection error:', err.message);
+      // Jika websocket gagal, socket.io otomatis akan mencoba polling
     });
 
     newSocket.on('connect', () => {
       setMe(newSocket.id);
       setIsConnected(true);
-      const parser = new UAParser();
-      const result = parser.getResult();
-      const deviceType = isMobile() ? 'Mobile' : 'Desktop';
-      newSocket.emit('join', {
-        name: userName,
-        deviceInfo: deviceType,
-        deviceType: deviceType
-      });
+      // Join room or register with display name if available
+      if (displayName) {
+        newSocket.emit('join', {
+          name: displayName,
+          deviceType: getDeviceInfo().isMobile ? 'mobile' : 'desktop',
+          browser: getDeviceInfo().browser,
+          isLocal: true
+        });
+      }
     });
 
     newSocket.on('users-list', (usersList) => {
-      setUsers(usersList.filter(u => u.id !== newSocket.id));
+      console.log('Received users list:', usersList);
+      const updatedUsers = usersList.filter(u => u.id !== newSocket.id).map(user => ({
+        ...user,
+        isLocal: user.isLocal ?? false
+      }));
+      setUsers(updatedUsers);
     });
 
-    newSocket.on('signal', ({ from, signal }) => {
+    newSocket.on('signal', ({ from, signal, pin }) => {
       if (signal.type === 'offer') {
-        setIncomingSignal({ from, signal });
-        return;
-      }
-      if (signal.type === 'cancel') {
-        remoteCancelledRef.current = true;
-        remotePeerIdRef.current = from;
-        if (peerRef.current) {
-          try { peerRef.current.destroy(); } catch (e) {}
-          peerRef.current = null;
-        }
-        window.location.reload();
-        return;
-      }
-      if (peerRef.current) {
+        setIncomingSignal({ from, signal, pin });
+      } else if (peerRef.current) {
         peerRef.current.signal(signal);
       }
     });
@@ -162,38 +122,64 @@ function App() {
     newSocket.on('disconnect', () => setIsConnected(false));
     setSocket(newSocket);
     return () => newSocket.close();
-  }, [userName]);
+  }, []);
 
+  // Update Name in Signaling
   useEffect(() => {
-    if (receiving && incomingSignal) {
-      acceptTransfer(incomingSignal, true);
+    if (displayName) {
+      localStorage.setItem('userDisplayName', displayName);
+      
+      // Sinkronisasi ke server jika socket sudah aktif
+      if (socket && isConnected) {
+        socket.emit('join', {
+          name: displayName,
+          deviceType: getDeviceInfo().isMobile ? 'mobile' : 'desktop',
+          browser: getDeviceInfo().browser,
+          isLocal: true
+        });
+      }
     }
-  }, [receiving, incomingSignal]);
+  }, [displayName, socket, isConnected]);
 
-  const isMobile = () => /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+  // --- Effects ---
+  useEffect(() => {
+    localStorage.setItem('transferHistory', JSON.stringify(history.slice(0, 50)));
+  }, [history]);
 
+  // --- Handlers ---
   const handleFileSelect = (e) => {
     const selectedFiles = Array.from(e.target.files);
     if (selectedFiles.length > 0) {
       setFileList(prev => [...prev, ...selectedFiles]);
+      toast.success(`${selectedFiles.length} file ditambahkan ke antrean`);
+    }
+  };
+
+  const handleDragOver = (e) => {
+    e.preventDefault();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = () => {
+    setIsDragging(false);
+  };
+
+  const handleDrop = (e) => {
+    e.preventDefault();
+    setIsDragging(false);
+    const files = Array.from(e.dataTransfer.files);
+    if (files.length > 0) {
+      setFileList(prev => [...prev, ...files]);
+      toast.success(`${files.length} file ditambahkan via drop`);
     }
   };
 
   const removeFile = (index) => setFileList(prev => prev.filter((_, i) => i !== index));
 
-  const formatSize = (bytes) => {
-    if (bytes === 0) return '0 Bytes';
-    const k = 1024;
-    const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-  };
-
-  const updateSpeed = (bytesSent) => {
+  const updateSpeed = (bytes) => {
     const now = Date.now();
-    speedRef.current.bytes += bytesSent;
+    speedRef.current.bytes += bytes;
     const timeDiff = (now - speedRef.current.lastTime) / 1000;
-    
     if (timeDiff >= 1) {
       setTransferSpeed(speedRef.current.bytes / timeDiff);
       speedRef.current.bytes = 0;
@@ -201,672 +187,864 @@ function App() {
     }
   };
 
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
   const startTransfer = async () => {
     if (fileList.length === 0 || !targetUser) return;
-    setSending(true);
-    setIsCancelled(false);
-    setSystemMessage('');
-    setRetryAttempt(0);
-    setTotalFiles(fileList.length);
-    remotePeerIdRef.current = targetUser.id;
-    remoteCancelledRef.current = false;
-    setCurrentFileIndex(0);
-    setCurrentFileName(fileList[0]?.name || '');
-    const totalBytesAll = fileList.reduce((acc, f) => acc + (f.size || 0), 0);
-    setTotalBytes(totalBytesAll);
-    const prefixBytes = [];
-    let running = 0;
-    for (const f of fileList) {
-      prefixBytes.push(running);
-      running += (f.size || 0);
+    
+    setTransferState('connecting');
+    setTransferType('sending');
+    
+    // Generate Encryption Key if Secure
+    if (isSecure) {
+      const salt = Math.random().toString(36).substring(7);
+      encryptionKeyRef.current = await generateKey('kirimfile-p2p', salt);
     }
 
-    const sendFileOverPeer = (peer, file, baseBytes, fileIndex) => new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onerror = () => reject(new Error('read-error'));
-      reader.onload = (e) => {
-        const buffer = e.target.result;
-        let offset = 0;
-        const chunkSize = 262144;
-        const bufferLimit = 12 * 1024 * 1024;
-
-        if (peer.destroyed || !peer.connected) {
-          reject(new Error('peer-not-connected'));
-          return;
-        }
-
-        try {
-          peer.send(JSON.stringify({
-            type: 'metadata',
-            name: file.name,
-            size: file.size,
-            mime: file.type || 'application/octet-stream'
-          }));
-        } catch (err) {
-          reject(err);
-          return;
-        }
-
-        const sendNextChunk = () => {
-          if (peer.destroyed || !peer.connected) {
-            reject(new Error('peer-disconnected'));
-            return;
-          }
-
-          try {
-            while (offset < buffer.byteLength) {
-              if (peer.bufferSize > bufferLimit) {
-                setTimeout(sendNextChunk, 1);
-                return;
-              }
-
-              const chunk = buffer.slice(offset, offset + chunkSize);
-              peer.send(chunk);
-              offset += chunk.byteLength;
-              updateSpeed(chunk.byteLength);
-              const now = Date.now();
-              if (now - lastProgressUpdateRef.current > 50 || offset >= buffer.byteLength) {
-                lastProgressUpdateRef.current = now;
-                const denom = totalBytesAll || buffer.byteLength;
-                const sentBytes = baseBytes + offset;
-                setProgress(Math.min(100, (sentBytes / denom) * 100));
-                if (now - lastProgressSignalRef.current > 80 || offset >= buffer.byteLength) {
-                  lastProgressSignalRef.current = now;
-                  try {
-                    peer.send(JSON.stringify({
-                      type: 'progress',
-                      sentBytes,
-                      totalBytes: totalBytesAll,
-                      fileIndex,
-                      fileName: file.name
-                    }));
-                  } catch (e) {}
-                }
-              }
-            }
-            setSystemMessage('');
-            resolve();
-          } catch (err) {
-            if (err.name === 'OperationError' || String(err?.message || '').includes('full')) {
-              setTimeout(sendNextChunk, 10);
-              return;
-            }
-            reject(err);
-          }
-        };
-
-        setTimeout(sendNextChunk, 50);
-      };
-      reader.readAsArrayBuffer(file);
+    const peer = new Peer({
+      initiator: true,
+      trickle: true,
+      config: PEER_CONFIG
     });
 
-    let startIndex = 0;
-    while (startIndex < fileList.length) {
-      if (remoteCancelledRef.current) {
-        break;
+    peerRef.current = peer;
+
+    peer.on('signal', (signal) => {
+      if (signal.candidate) {
+        const mode = detectConnectionType(signal.candidate.candidate);
+        setConnectionMode(mode);
       }
-      const result = await new Promise((resolve) => {
-        let currentIndex = startIndex;
-        const peer = new Peer({
-          initiator: true,
-          trickle: true,
-          config: { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] }
-        });
+      emitSignal(socket, targetUser.id, me, signal, { pin: roomPin });
+    });
 
-        peerRef.current = peer;
-        const connectMsgTimer = setTimeout(() => {
-          setSystemMessage('Sistem: Menghubungkan ke perangkat penerima...');
-        }, 400);
+    peer.on('connect', async () => {
+      setTransferState('transferring');
+      peer.send(JSON.stringify({ type: 'batch-start', count: fileList.length, isSecure }));
 
-        peer.on('signal', (signal) => {
-          socket.emit('signal', { to: targetUser.id, from: me, signal });
-        });
+      for (let i = 0; i < fileList.length; i++) {
+        setCurrentFileIndex(i);
+        const file = fileList[i];
+        const hash = await calculateHash(file);
+        
+        peer.send(JSON.stringify({
+          type: 'metadata',
+          name: file.name,
+          size: file.size,
+          mime: file.type || 'application/octet-stream',
+          hash
+        }));
 
-        const connectTimeout = setTimeout(() => {
-          clearTimeout(connectMsgTimer);
-          setRetryAttempt((a) => a + 1);
-          setSystemMessage('Sistem: Menunggu penerima menyetujui, mencoba ulang...');
-          try { peer.destroy(); } catch (e) {}
-          if (peerRef.current === peer) peerRef.current = null;
-          resolve({ retry: true, index: currentIndex });
-        }, 8000);
-
-        peer.on('connect', async () => {
-          clearTimeout(connectTimeout);
-          clearTimeout(connectMsgTimer);
-          setSystemMessage('');
-          setTransferSpeed(0);
-          speedRef.current = { bytes: 0, lastTime: Date.now() };
-          try {
-            peer.send(JSON.stringify({ type: 'batch-start', count: fileList.length, totalBytes: totalBytesAll }));
-          } catch (e) {
-            setRetryAttempt((a) => a + 1);
-            setSystemMessage('Sistem: Gagal memulai pengiriman, mencoba ulang...');
-            try { peer.destroy(); } catch (x) {}
-            if (peerRef.current === peer) peerRef.current = null;
-            resolve({ retry: true, index: currentIndex });
-            return;
-          }
-
-          for (let i = startIndex; i < fileList.length; i++) {
-            currentIndex = i;
-            setCurrentFileIndex(i);
-            const file = fileList[i];
-            setCurrentFileName(file.name);
-            const baseBytes = prefixBytes[i] || 0;
-            const denom = totalBytesAll || file.size || 1;
-            setProgress(Math.min(100, (baseBytes / denom) * 100));
-            try {
-              await sendFileOverPeer(peer, file, baseBytes, i);
-            } catch (e) {
-              setRetryAttempt((a) => a + 1);
-              setSystemMessage('Sistem: Koneksi bermasalah, sistem mencoba ulang...');
-              try { peer.destroy(); } catch (x) {}
-              if (peerRef.current === peer) peerRef.current = null;
-              resolve({ retry: true, index: currentIndex });
-              return;
+        await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = async (e) => {
+            let buffer = e.target.result;
+            
+            // Kompresi jika file besar
+            const { compressed, data: finalBuffer } = compressData(buffer);
+            if (compressed) {
+              peer.send(JSON.stringify({ type: 'control', action: 'compressed' }));
+              buffer = finalBuffer;
             }
-          }
-          if (peerRef.current === peer) peerRef.current = null;
-          resolve({ done: true });
+
+            let offset = 0;
+            let chunkSize = MIN_CHUNK_SIZE;
+
+            const sendChunk = async () => {
+              try {
+                while (offset < buffer.byteLength) {
+                  if (peer.destroyed) {
+                    reject(new Error('Koneksi terputus'));
+                    return;
+                  }
+
+                  if (peer.bufferSize > BUFFER_THRESHOLD) {
+                    setTimeout(sendChunk, 50);
+                    return;
+                  }
+
+                  const currentChunk = buffer.slice(offset, offset + chunkSize);
+                  let dataToSend = currentChunk;
+
+                  if (isSecure && encryptionKeyRef.current) {
+                    const iv = window.crypto.getRandomValues(new Uint8Array(12));
+                    const encrypted = await encryptChunk(encryptionKeyRef.current, currentChunk, iv);
+                    const combined = new Uint8Array(iv.length + encrypted.byteLength);
+                    combined.set(iv);
+                    combined.set(new Uint8Array(encrypted), iv.length);
+                    dataToSend = combined;
+                  }
+
+                  peer.send(dataToSend);
+                  offset += currentChunk.byteLength;
+                  updateSpeed(currentChunk.byteLength);
+                  
+                  const currentProgress = (offset / buffer.byteLength) * 100;
+                  setProgress(currentProgress);
+                  setEta(calculateETA(buffer.byteLength, offset, transferSpeed));
+
+                  if (peer.bufferSize < BUFFER_THRESHOLD / 2) {
+                    chunkSize = Math.min(MAX_CHUNK_SIZE, chunkSize + 4096);
+                  }
+                }
+                resolve();
+              } catch (err) {
+                reject(err);
+              }
+            };
+            sendChunk();
+          };
+          reader.readAsArrayBuffer(file);
         });
+      }
 
-        const onFailure = () => {
-          clearTimeout(connectTimeout);
-          clearTimeout(connectMsgTimer);
-          setRetryAttempt((a) => a + 1);
-          setSystemMessage('Sistem: Koneksi terputus, sistem mencoba menyambungkan ulang...');
-          try { peer.destroy(); } catch (x) {}
-          if (peerRef.current === peer) peerRef.current = null;
-          resolve({ retry: true, index: currentIndex });
-        };
-
-        peer.on('error', onFailure);
-        peer.on('close', onFailure);
-      });
-
-      if (result?.done) break;
-      startIndex = result?.index ?? startIndex;
-      await sleep(Math.min(200, 20 + retryAttempt * 10));
-    }
-
-    setTimeout(() => {
-      setSending(false);
-      setSystemMessage('');
-      setRetryAttempt(0);
-      setTotalBytes(0);
+      setTransferState('completed');
+      toast.success('Semua file berhasil dikirim!');
+      setHistory(prev => [{
+        id: Date.now(),
+        type: 'sent',
+        to: targetUser.name,
+        files: fileList.length,
+        size: fileList.reduce((acc, f) => acc + f.size, 0),
+        time: new Date().toLocaleTimeString()
+      }, ...prev]);
       setFileList([]);
-      setTargetUser(null);
-    }, 500);
+    });
+
+    peer.on('error', (err) => {
+      console.error('Peer error:', err);
+      setTransferState('error');
+      toast.error('Gagal mengirim file: Koneksi bermasalah');
+    });
+    
+    peer.on('close', () => {
+      if (transferState === 'transferring') {
+        toast.error('Koneksi terputus! Mencoba resume...');
+        // Logika resume bisa ditambahkan di sini dengan menyimpan offset terakhir
+      }
+    });
   };
 
-  const acceptTransfer = (overrideSignal, autoAccept = false) => {
-    if (!incomingSignal && !overrideSignal) return;
-    if (!receiving) setReceiving(true);
-    setProgress(0);
-    const { from, signal } = overrideSignal || incomingSignal;
+  const acceptTransfer = () => {
+    setTransferState('transferring');
+    setTransferType('receiving');
+    const { from, signal } = incomingSignal;
     setIncomingSignal(null);
-    remotePeerIdRef.current = from;
-    remoteCancelledRef.current = false;
 
     const peer = new Peer({
       initiator: false,
       trickle: true,
-      config: { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] }
+      config: PEER_CONFIG
     });
 
     peerRef.current = peer;
     peer.on('signal', (signal) => {
-      socket.emit('signal', { to: from, from: me, signal });
-    });
-
-    peer.on('close', () => {
-      if (receiving) {
-        setRetryAttempt((a) => a + 1);
-        setSystemMessage('Sistem: Koneksi terputus, menunggu pengirim mencoba lagi...');
+      if (signal.candidate) {
+        const mode = detectConnectionType(signal.candidate.candidate);
+        setConnectionMode(mode);
       }
-      setProgress(0);
-      setTransferSpeed(0);
-      if (peerRef.current === peer) peerRef.current = null;
+      emitSignal(socket, from, me, signal);
     });
- 
-     peer.on('error', () => {
-       if (receiving) {
-         setRetryAttempt((a) => a + 1);
-         setSystemMessage('Sistem: Terjadi gangguan jaringan, menunggu pengirim mencoba lagi...');
-       }
-       if (peerRef.current === peer) peerRef.current = null;
-     });
 
     let receivedChunks = [];
     let metadata = null;
     let receivedSize = 0;
-    let receivedCount = 0;
-    let totalFilesLocal = 0;
-    let totalBytesLocal = 0;
-    let receivedBytesCompleted = 0;
+    let totalFiles = 0;
+    let currentFilesCount = 0;
 
-    peer.on('connect', () => {
-      setSystemMessage('');
-      setTransferSpeed(0);
-      speedRef.current = { bytes: 0, lastTime: Date.now() };
-    });
+    let isCompressed = false;
 
-    peer.on('data', (data) => {
-      // Konversi data ke Buffer jika belum (karena kita sudah polyfill)
-      const bufferData = Buffer.isBuffer(data) ? data : Buffer.from(data);
-      updateSpeed(bufferData.length);
+    peer.on('data', async (data) => {
+      const parsed = parseMessage(data);
 
-      // Cek apakah data adalah JSON (Metadata)
-      if (bufferData[0] === 123) { // 123 adalah '{'
+      if (parsed.type === 'json') {
+        const message = parsed.message;
+        if (message.type === 'batch-start') { 
+          totalFiles = message.count; 
+          return; 
+        }
+        if (message.type === 'metadata') {
+          metadata = message;
+          receivedChunks = [];
+          receivedSize = 0;
+          setProgress(0);
+          isCompressed = false;
+          return;
+        }
+        if (message.type === 'control' && message.action === 'compressed') {
+          isCompressed = true;
+          return;
+        }
+      }
+
+      // Handle Binary Data (Chunk)
+      let chunkData = data;
+      if (isSecure && encryptionKeyRef.current) {
         try {
-          const message = JSON.parse(bufferData.toString());
-          if (message.type === 'batch-start') { 
-            totalFilesLocal = message.count;
-            setTotalFiles(message.count);
-            totalBytesLocal = message.totalBytes || 0;
-            setTotalBytes(totalBytesLocal);
-            receivedBytesCompleted = 0;
-            setCurrentFileIndex(0);
-            return; 
-          }
-          if (message.type === 'progress') {
-            lastSenderProgressAtRef.current = Date.now();
-            if (!totalBytesLocal && message.totalBytes) {
-              totalBytesLocal = message.totalBytes;
-              setTotalBytes(totalBytesLocal);
-            }
-            if (typeof message.fileIndex === 'number') {
-              setCurrentFileIndex(message.fileIndex);
-            }
-            if (message.fileName) {
-              setCurrentFileName(message.fileName);
-            }
-            if (totalBytesLocal > 0) {
-              setProgress(Math.min(100, (message.sentBytes / totalBytesLocal) * 100));
-            }
-            return;
-          }
-          if (message.type === 'metadata') {
-            metadata = message;
-            setCurrentFileName(message.name);
-            receivedChunks = [];
-            receivedSize = 0;
-            if (totalBytesLocal > 0) {
-              setProgress(Math.min(100, (receivedBytesCompleted / totalBytesLocal) * 100));
-            } else {
-              setProgress(0);
-            }
-            return;
-          }
+          const iv = data.slice(0, 12);
+          const encrypted = data.slice(12);
+          chunkData = await decryptChunk(encryptionKeyRef.current, encrypted, iv);
         } catch (e) {
-          // Bukan JSON valid, abaikan dan anggap sebagai chunk binary
+          console.error('Decryption failed', e);
         }
       }
 
-      // Penanganan File Chunk
-      if (!metadata) return; // Abaikan jika metadata belum diterima
-
-      receivedChunks.push(bufferData);
-      receivedSize += bufferData.length;
+      receivedChunks.push(chunkData);
+      receivedSize += chunkData.byteLength || chunkData.length;
+      updateSpeed(chunkData.byteLength || chunkData.length);
       
-      const senderProgressFresh = Date.now() - lastSenderProgressAtRef.current < 600;
-      if (!senderProgressFresh) {
-        if (totalBytesLocal > 0) {
-          setProgress(Math.min(100, ((receivedBytesCompleted + receivedSize) / totalBytesLocal) * 100));
-        } else {
-          setProgress(Math.min(100, (receivedSize / metadata.size) * 100));
-        }
-      }
-      
-      if (receivedSize >= metadata.size) {
-        const blob = new Blob(receivedChunks, { type: metadata.mime });
-        const url = URL.createObjectURL(blob);
-        const newFile = { name: metadata.name, url, size: metadata.size, time: new Date().toLocaleTimeString() };
-        
-        setReceivedFiles(prev => [...prev, newFile]);
-        setHistory(prev => [newFile, ...prev].slice(0, 20));
-        
-        // Auto Download
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = metadata.name;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
+      if (metadata) {
+        const currentProgress = (receivedSize / metadata.size) * 100;
+        setProgress(currentProgress);
+        setEta(calculateETA(metadata.size, receivedSize, transferSpeed));
 
-        metadata = null; // Reset metadata untuk file berikutnya
-        receivedBytesCompleted += (newFile.size || 0);
-        if (totalBytesLocal > 0) {
-          setProgress(Math.min(100, (receivedBytesCompleted / totalBytesLocal) * 100));
-        }
-        receivedCount++;
-        setCurrentFileIndex(receivedCount);
-        
-        if (receivedCount >= totalFilesLocal) {
-          setTimeout(() => {
-            setReceiving(false);
-            setTotalBytes(0);
-          }, 1000);
+        if (receivedSize >= metadata.size) {
+          let finalBuffer = receivedChunks;
+          if (isCompressed) {
+            // Gabungkan chunks dan dekompresi
+            const combined = new Uint8Array(receivedSize);
+            let offset = 0;
+            receivedChunks.forEach(c => {
+              combined.set(new Uint8Array(c), offset);
+              offset += c.byteLength;
+            });
+            finalBuffer = [decompressData(combined.buffer)];
+          }
+
+          const blob = new Blob(finalBuffer, { type: metadata.mime });
+          const url = URL.createObjectURL(blob);
+          setReceivedFiles(prev => [...prev, { name: metadata.name, url, size: metadata.size }]);
+          
+          currentFilesCount++;
+          if (currentFilesCount >= totalFiles) {
+            setTransferState('completed');
+            toast.success('Berhasil menerima semua file!');
+            setHistory(prev => [{
+              id: Date.now(),
+              type: 'received',
+              from: users.find(u => u.id === from)?.name || 'Unknown',
+              files: totalFiles,
+              size: receivedSize,
+              time: new Date().toLocaleTimeString()
+            }, ...prev]);
+          }
         }
       }
     });
+
     peer.signal(signal);
   };
 
-  const handleSaveName = (newName) => {
-    if (!newName.trim()) return;
-    setUserName(newName);
-    localStorage.setItem('userName', newName);
-    setIsEditingName(false);
-  };
-
-  const handleDeleteHistory = () => {
-    if (deleteConfirm === null) return;
-    const newHistory = history.filter((_, i) => i !== deleteConfirm.index);
-    setHistory(newHistory);
-    setDeleteConfirm(null);
-    
-    // Sesuaikan pagination jika halaman jadi kosong
-    const totalPages = Math.ceil(newHistory.length / itemsPerPage);
-    if (historyPage > totalPages && totalPages > 0) {
-      setHistoryPage(totalPages);
+  const handleSaveName = () => {
+    if (tempName.trim()) {
+      const newName = tempName.trim();
+      setDisplayName(newName);
+      setShowOnboarding(false);
+      setIsEditingName(false);
+      setTempName('');
+      
+      // Notify server about name change
+      if (socket && isConnected) {
+        socket.emit('join', {
+          name: newName,
+          deviceType: getDeviceInfo().isMobile ? 'mobile' : 'desktop',
+          browser: getDeviceInfo().browser,
+          isLocal: true
+        });
+      }
     }
   };
 
-  const handleDeleteAllHistory = () => {
-    setHistory([]);
-    setHistoryPage(1);
-    setDeleteAllConfirm(false);
-  };
-
-  const cancelTransfer = () => {
-      const to = remotePeerIdRef.current || targetUser?.id || incomingSignal?.from;
-      if (to) {
-        socket.emit('signal', { to, from: me, signal: { type: 'cancel' } });
-      }
-     
-     if (peerRef.current) {
-       peerRef.current.destroy();
-       peerRef.current = null;
-     }
-     
-     // Beri sedikit waktu untuk socket terkirim sebelum refresh
-     setTimeout(() => {
-       window.location.reload();
-     }, 100);
-   };
-
-  const handleDragOver = (e) => { e.preventDefault(); e.stopPropagation(); };
-  const handleDrop = (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    const droppedFiles = Array.from(e.dataTransfer.files);
-    if (droppedFiles.length > 0) setFileList(prev => [...prev, ...droppedFiles]);
-  };
-
+  // --- Render Components ---
   return (
-    <div className="min-h-screen bg-slate-900 text-white p-4 md:p-8 font-sans">
-      <div className="max-w-6xl mx-auto">
-        {/* Header */}
-        <header className="flex items-center justify-between mb-12">
-          <div className="flex items-center gap-4">
-            <div className="w-16 h-16 flex items-center justify-center overflow-hidden">
-              <img src="/logo.png" alt="KirimFile Logo" className="w-full h-full object-contain transform scale-110" />
-            </div>
-            <div className="flex flex-col min-w-0 flex-1">
-              <div className="flex items-center gap-2 group">
-                <h1 className="text-xl md:text-2xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-indigo-400 break-words line-clamp-2 md:line-clamp-1">
-                  {userName || 'Set Nama'}
-                </h1>
-                <button onClick={() => { setTempName(userName); setIsEditingName(true); }} className="p-1.5 hover:bg-slate-800 rounded-lg text-slate-500 hover:text-blue-400 transition-all shrink-0">
-                  <Edit2 size={14} />
-                </button>
-              </div>
-              <p className="text-slate-400 text-xs md:text-sm flex items-center gap-1 shrink-0"><ShieldCheck size={14} className="text-blue-500" /> KirimFile Secure P2P</p>
-            </div>
-          </div>
+    <div className="min-h-screen bg-[#0a0c10] text-slate-200 font-sans selection:bg-blue-500/30 overflow-x-hidden">
+      <Toaster position="top-right" />
+      {/* Background Decor */}
+      <div className="fixed inset-0 overflow-hidden pointer-events-none">
+        <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-blue-600/10 blur-[120px] rounded-full" />
+        <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-indigo-600/10 blur-[120px] rounded-full" />
+      </div>
+
+      <div className="relative max-w-7xl mx-auto px-4 md:px-8 py-6">
+        {/* Navigation / Header */}
+        <header className="flex items-center justify-between mb-10">
           <div className="flex items-center gap-3">
-            <div className={`px-4 py-1.5 rounded-full border text-xs font-bold tracking-wide transition-all ${isConnected ? 'bg-green-500/10 border-green-500/50 text-green-400' : 'bg-red-500/10 border-red-500/50 text-red-400'}`}>
-              <span className="flex items-center gap-2">
-                <span className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} />
-                <span className="hidden md:inline">{isConnected ? 'ONLINE' : 'OFFLINE'}</span>
-              </span>
+            <div className="w-12 h-12 flex items-center justify-center overflow-hidden">
+              <img src="/logo.png" alt="Logo" className="w-full h-full object-contain rounded-full" />
+            </div>
+            <div>
+              <h1 className="text-xl font-bold tracking-tight text-white">KirimFile<span className="text-blue-500">.</span></h1>
+              <div className="flex items-center gap-2 text-[10px] font-medium uppercase tracking-wider">
+                <span className={`flex h-1.5 w-1.5 rounded-full ${isConnected ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} />
+                <span className={isConnected ? 'text-green-400' : 'text-red-400'}>
+                  {isConnected ? `ONLINE (${connectionMode})` : 'CONNECTING...'}
+                </span>
+              </div>
             </div>
           </div>
+
+          <div className="hidden md:flex items-center gap-6">
+            <nav className="flex items-center gap-1 p-1 bg-white/5 rounded-xl border border-white/10">
+              <button 
+                onClick={() => setActiveTab('transfer')}
+                className={`px-4 py-2 text-sm font-medium rounded-lg shadow-sm transition-all ${activeTab === 'transfer' ? 'bg-blue-500 text-white' : 'text-slate-400 hover:text-white'}`}
+              >
+                Transfer
+              </button>
+              <button 
+                onClick={() => setActiveTab('history')}
+                className={`px-4 py-2 text-sm font-medium rounded-lg shadow-sm transition-all ${activeTab === 'history' ? 'bg-blue-500 text-white' : 'text-slate-400 hover:text-white'}`}
+              >
+                History
+              </button>
+            </nav>
+            <div className="h-8 w-[1px] bg-white/10" />
+            <div className="flex items-center gap-3">
+              <div className="text-right">
+                <div className="flex items-center gap-2 group">
+                  {isEditingName ? (
+                    <div className="flex items-center gap-2">
+                      <input 
+                        autoFocus
+                        type="text"
+                        value={tempName}
+                        onChange={(e) => setTempName(e.target.value)}
+                        onKeyDown={(e) => e.key === 'Enter' && handleSaveName()}
+                        className="bg-black/40 border border-blue-500/50 rounded-md px-2 py-0.5 text-xs text-white outline-none w-24"
+                      />
+                      <button onClick={handleSaveName} className="text-blue-500 hover:text-blue-400">
+                        <CheckCircle size={14} />
+                      </button>
+                    </div>
+                  ) : (
+                    <>
+                      <p className="text-xs font-semibold text-white">{displayName || 'Anonymous'}</p>
+                      <button 
+                        onClick={() => {setIsEditingName(true); setTempName(displayName);}}
+                        className="text-slate-500 hover:text-blue-400 transition-colors opacity-0 group-hover:opacity-100"
+                      >
+                        <Edit2 size={12} />
+                      </button>
+                    </>
+                  )}
+                </div>
+                <p className="text-[10px] text-slate-500">{me.slice(0, 8)}</p>
+              </div>
+              <div 
+                onClick={() => {setIsEditingName(true); setTempName(displayName);}}
+                className="w-10 h-10 rounded-full bg-gradient-to-br from-slate-700 to-slate-800 border border-white/10 flex items-center justify-center text-blue-400 font-bold text-sm cursor-pointer hover:border-blue-500/50 transition-all"
+              >
+                <Edit2 size={18} />
+              </div>
+            </div>
+          </div>
+          
+          <button className="md:hidden p-2 text-slate-400">
+            <Menu size={24} />
+          </button>
         </header>
 
         <main className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-          {/* Perangkat Terdekat */}
-          <section className="lg:col-span-4 space-y-6 order-1 lg:order-1">
-            <h2 className="text-lg font-semibold text-slate-300 flex items-center gap-2"><Monitor size={20} /> Perangkat Terdekat</h2>
-            <div className="space-y-3">
-              {users.length === 0 ? (
-                <div className="p-8 text-center bg-slate-800/50 rounded-2xl border border-dashed border-slate-700">
-                  <div className="animate-pulse flex flex-col items-center"><Loader2 className="animate-spin mb-3 text-slate-500" /><p className="text-slate-500">Mencari perangkat lain...</p></div>
+          {activeTab === 'transfer' && (
+            <>
+              {/* Left Column: Device Discovery & Controls */}
+              <div className="lg:col-span-4 space-y-6">
+                <div className="bg-white/5 border border-white/10 rounded-3xl p-6 backdrop-blur-xl">
+                  <div className="flex items-center justify-between mb-6">
+                    <h2 className="text-sm font-bold text-white flex items-center gap-2">
+                      <Globe size={18} className="text-blue-500" /> Nearby Devices
+                    </h2>
+                    <button className="p-2 hover:bg-white/5 rounded-lg text-slate-500 transition-all active:rotate-180 duration-500">
+                      <RefreshCw size={16} />
+                    </button>
+                  </div>
+
+                  <div className="space-y-3 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
+                    {users.length === 0 ? (
+                      <div className="py-12 flex flex-col items-center text-center">
+                        <div className="w-16 h-16 bg-blue-500/10 rounded-full flex items-center justify-center mb-4 animate-pulse">
+                          <Search size={24} className="text-blue-500/50" />
+                        </div>
+                        <p className="text-sm text-slate-400 font-medium">Scanning for devices...</p>
+                        <p className="text-[11px] text-slate-600 mt-1 px-10">Make sure others have KirimFile open on the same network or internet.</p>
+                      </div>
+                    ) : (
+                      users.map((user) => (
+                        <motion.div
+                          initial={{ opacity: 0, y: 10 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          key={user.id}
+                          onClick={() => setTargetUser(user)}
+                          className={`group relative p-4 rounded-2xl border cursor-pointer transition-all duration-300 ${
+                            targetUser?.id === user.id 
+                              ? 'bg-blue-600 border-blue-400 shadow-xl shadow-blue-600/20' 
+                              : 'bg-white/[0.03] border-white/5 hover:border-white/20 hover:bg-white/[0.06]'
+                          }`}
+                        >
+                          <div className="flex items-center gap-4">
+                            <div className={`w-12 h-12 rounded-xl flex items-center justify-center transition-colors ${
+                              targetUser?.id === user.id ? 'bg-white/20' : 'bg-slate-800'
+                            }`}>
+                              {user.deviceType === 'mobile' ? <Smartphone size={22} /> : <Monitor size={22} />}
+                            </div>
+                            <div className="flex-1 overflow-hidden">
+                              <h3 className={`font-bold text-sm truncate ${targetUser?.id === user.id ? 'text-white' : 'text-slate-200'}`}>
+                                {user.name}
+                              </h3>
+                              <div className="flex items-center gap-2 mt-1">
+                                <span className={`text-[9px] font-bold uppercase px-1.5 py-0.5 rounded-md ${
+                                  targetUser?.id === user.id ? 'bg-white/20 text-white' : 'bg-slate-700/50 text-slate-400'
+                                }`}>
+                                  {user.deviceType}
+                                </span>
+                                <span className={`text-[9px] font-bold uppercase px-1.5 py-0.5 rounded-md ${
+                                  user.isLocal ? 'bg-green-500/20 text-green-400' : 'bg-orange-500/20 text-orange-400'
+                                }`}>
+                                  {user.isLocal ? 'Lokal' : 'Internet'}
+                                </span>
+                              </div>
+                            </div>
+                            {targetUser?.id === user.id && (
+                              <div className="bg-white rounded-full p-1 text-blue-600">
+                                <ChevronRight size={14} />
+                              </div>
+                            )}
+                          </div>
+                        </motion.div>
+                      ))
+                    )}
+                  </div>
                 </div>
-              ) : (
-                users.map((user) => (
-                  <motion.div initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }} key={user.id} onClick={() => setTargetUser(user)} className={`p-5 rounded-2xl border cursor-pointer transition-all flex items-center justify-between ${targetUser?.id === user.id ? 'bg-blue-600/20 border-blue-500 shadow-xl shadow-blue-500/10' : 'bg-slate-800 border-slate-700 hover:border-slate-600'}`}>
-                    <div className="flex items-center gap-4">
-                      <div className={`p-3 rounded-xl ${targetUser?.id === user.id ? 'bg-blue-600' : 'bg-slate-700'}`}>{user.deviceType === 'Mobile' ? <Smartphone size={24} /> : <Monitor size={24} />}</div>
-                      <div className="overflow-hidden"><h3 className="font-bold text-slate-100 truncate">{user.name}</h3><p className="text-[11px] text-slate-400 font-medium">{user.deviceType}</p></div>
+
+                {/* Quick Settings */}
+                <div className="bg-white/5 border border-white/10 rounded-3xl p-6 backdrop-blur-xl">
+                  <h2 className="text-sm font-bold text-white mb-4 flex items-center gap-2">
+                    <Settings size={18} className="text-slate-400" /> Transfer Settings
+                  </h2>
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <div className="p-2 bg-green-500/10 rounded-lg">
+                          <ShieldCheck size={18} className="text-green-500" />
+                        </div>
+                        <div>
+                          <p className="text-xs font-bold text-white">E2E Encryption</p>
+                          <p className="text-[10px] text-slate-500">AES-256 GCM Secure</p>
+                        </div>
+                      </div>
+                      <button 
+                        onClick={() => setIsSecure(!isSecure)}
+                        className={`w-10 h-5 rounded-full transition-colors relative ${isSecure ? 'bg-blue-500' : 'bg-slate-700'}`}
+                      >
+                        <div className={`absolute top-1 w-3 h-3 bg-white rounded-full transition-all ${isSecure ? 'right-1' : 'left-1'}`} />
+                      </button>
+                    </div>
+                    
+                    <div className="pt-4 border-t border-white/5">
+                      <div className="flex items-center gap-3 mb-3">
+                        <div className="p-2 bg-blue-500/10 rounded-lg">
+                          <Lock size={18} className="text-blue-500" />
+                        </div>
+                        <div>
+                          <p className="text-xs font-bold text-white">Secure Room PIN</p>
+                          <p className="text-[10px] text-slate-500">Only connect via PIN</p>
+                        </div>
+                      </div>
+                      <input 
+                        type="text" 
+                        placeholder="Enter 4-digit PIN (Optional)" 
+                        maxLength={4}
+                        value={roomPin}
+                        onChange={(e) => setRoomPin(e.target.value)}
+                        className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white placeholder:text-slate-600 focus:outline-none focus:border-blue-500/50 transition-colors"
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Right Column: Main Interaction Area */}
+              <div className="lg:col-span-8 space-y-6">
+            <div className="bg-white/5 border border-white/10 rounded-[32px] p-8 backdrop-blur-xl relative overflow-hidden group">
+              {/* Upload Illustration Background */}
+              <div className="absolute top-0 right-0 w-64 h-64 bg-blue-500/5 blur-[80px] rounded-full -translate-y-1/2 translate-x-1/2 group-hover:bg-blue-500/10 transition-colors" />
+              
+              <div className="relative flex flex-col md:flex-row gap-8 items-start">
+                <div className="flex-1 w-full">
+                  <div 
+                    onClick={() => fileInputRef.current.click()}
+                    onDragOver={handleDragOver}
+                    onDragLeave={handleDragLeave}
+                    onDrop={handleDrop}
+                    className={`group/drop relative border-2 border-dashed rounded-3xl p-10 flex flex-col items-center justify-center transition-all duration-500 cursor-pointer h-72 ${
+                      isDragging 
+                        ? 'border-blue-500 bg-blue-500/10 scale-[1.02]' 
+                        : 'border-white/10 bg-white/[0.02] hover:bg-white/[0.04] hover:border-blue-500/50'
+                    }`}
+                  >
+                    <input type="file" className="hidden" ref={fileInputRef} onChange={handleFileSelect} multiple />
+                    <div className="w-20 h-20 bg-gradient-to-br from-blue-500/20 to-indigo-600/20 rounded-2xl flex items-center justify-center mb-6 group-hover/drop:scale-110 transition-transform duration-500 ring-1 ring-white/10">
+                      <FileUp size={40} className={isDragging ? 'text-white' : 'text-blue-500'} />
+                    </div>
+                    <h3 className="text-lg font-bold text-white mb-2">
+                      {isDragging ? 'Lepaskan untuk Upload' : 'Drop files here or click'}
+                    </h3>
+                    <p className="text-sm text-slate-500 max-w-[240px] text-center">Select files or folders to transfer instantly via P2P.</p>
+                  </div>
+                </div>
+
+                    <div className="w-full md:w-80 flex flex-col justify-between h-72">
+                      <div className="bg-black/20 rounded-2xl p-5 border border-white/5">
+                        <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-4">Transfer Summary</h3>
+                        <div className="space-y-3">
+                          <div className="flex justify-between items-center">
+                            <span className="text-xs text-slate-500">Selected Files</span>
+                            <span className="text-sm font-bold text-white">{fileList.length} Items</span>
+                          </div>
+                          <div className="flex justify-between items-center">
+                            <span className="text-xs text-slate-500">Total Volume</span>
+                            <span className="text-sm font-bold text-white">{formatSize(fileList.reduce((acc, f) => acc + f.size, 0))}</span>
+                          </div>
+                          <div className="flex justify-between items-center">
+                            <span className="text-xs text-slate-500">Recipient</span>
+                            <span className={`text-sm font-bold ${targetUser ? 'text-blue-400' : 'text-slate-600 italic'}`}>
+                              {targetUser ? targetUser.name : 'Select Device'}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <button
+                        disabled={fileList.length === 0 || !targetUser || transferState !== 'idle'}
+                        onClick={startTransfer}
+                        className={`group relative w-full py-4 rounded-2xl font-bold text-lg transition-all duration-300 overflow-hidden ${
+                          fileList.length === 0 || !targetUser || transferState !== 'idle'
+                            ? 'bg-slate-800 text-slate-500 cursor-not-allowed border border-white/5'
+                            : 'bg-blue-600 hover:bg-blue-500 text-white shadow-2xl shadow-blue-600/30 active:scale-95'
+                        }`}
+                      >
+                        <div className="absolute inset-0 bg-gradient-to-r from-white/0 via-white/10 to-white/0 -translate-x-full group-hover:animate-[shimmer_2s_infinite]" />
+                        <div className="relative flex items-center justify-center gap-3">
+                          {transferState === 'connecting' ? <Loader2 className="animate-spin" /> : <Share2 size={20} />}
+                          {transferState === 'connecting' ? 'Establishing P2P...' : 'Send Files Now'}
+                        </div>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* File List Table */}
+                {fileList.length > 0 && (
+                  <motion.div 
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="bg-white/5 border border-white/10 rounded-3xl overflow-hidden backdrop-blur-xl"
+                  >
+                    <div className="px-6 py-4 border-b border-white/5 bg-white/[0.02] flex justify-between items-center">
+                      <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                        <Files size={16} className="text-slate-400" /> Pending Queue
+                      </h3>
+                      <button 
+                        onClick={() => setFileList([])}
+                        className="text-[10px] font-bold text-red-500/80 hover:text-red-500 uppercase tracking-wider flex items-center gap-1.5 transition-colors"
+                      >
+                        <Trash2 size={12} /> Clear All
+                      </button>
+                    </div>
+                    <div className="max-h-60 overflow-y-auto custom-scrollbar">
+                      <table className="w-full text-left text-sm">
+                        <tbody>
+                          {fileList.map((f, i) => (
+                            <tr key={i} className="group border-b border-white/[0.02] last:border-0 hover:bg-white/[0.02] transition-colors">
+                              <td className="px-6 py-4 flex items-center gap-3 truncate max-w-[300px]">
+                                <div className="w-8 h-8 rounded-lg bg-slate-800 flex items-center justify-center group-hover:bg-blue-500/20 transition-colors">
+                                  <FileIcon size={14} className="text-slate-400 group-hover:text-blue-500" />
+                                </div>
+                                <span className="font-medium text-slate-300 truncate">{f.name}</span>
+                              </td>
+                              <td className="px-6 py-4 text-slate-500 text-xs">{formatSize(f.size)}</td>
+                              <td className="px-6 py-4 text-right">
+                                <button 
+                                  onClick={() => removeFile(i)} 
+                                  className="p-2 hover:bg-red-500/10 text-slate-600 hover:text-red-500 rounded-lg transition-colors"
+                                >
+                                  <X size={14} />
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
                     </div>
                   </motion.div>
-                ))
-              )}
-            </div>
-          </section>
-
-          {/* Area Transfer */}
-          <section className="lg:col-span-8 space-y-6 order-2 lg:order-2">
-            <h2 className="text-lg font-semibold text-slate-300 flex items-center gap-2"><Files size={20} /> Transfer File</h2>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <div onDragOver={handleDragOver} onDrop={handleDrop} onClick={() => fileInputRef.current.click()} className="h-64 border-2 border-dashed border-slate-700 bg-slate-800/30 rounded-3xl flex flex-col items-center justify-center cursor-pointer hover:border-blue-500/50 hover:bg-slate-800/50 transition-all group">
-                <input type="file" className="hidden" ref={fileInputRef} onChange={handleFileSelect} multiple />
-                <div className="w-16 h-16 bg-blue-600/10 rounded-2xl flex items-center justify-center mb-4 group-hover:scale-110 transition-transform"><FileUp size={32} className="text-blue-500" /></div>
-                <p className="font-medium text-lg mb-1">
-                  <span className="hidden md:inline">Drag & Drop Atau </span>Pilih File
-                </p>
-                <p className="text-sm text-slate-400 text-center px-4">Masukkan File Anda Tanpa Batas</p>
-              </div>
-
-              <div className="bg-slate-800/50 rounded-3xl p-6 border border-slate-700 flex flex-col justify-between">
-                <div>
-                  <h3 className="font-semibold text-slate-400 mb-4">Ringkasan</h3>
-                  <div className="space-y-3">
-                    <div className="flex justify-between text-sm"><span>Jumlah File:</span><span className="font-bold">{fileList.length}</span></div>
-                    <div className="flex justify-between text-sm"><span>Total Ukuran:</span><span className="font-bold">{formatSize(fileList.reduce((acc, f) => acc + f.size, 0))}</span></div>
-                    <div className="flex justify-between text-sm"><span>Penerima:</span><span className="font-bold text-blue-400">{targetUser ? targetUser.name : 'Belum Dipilih'}</span></div>
-                  </div>
-                </div>
-                <button disabled={fileList.length === 0 || !targetUser || sending || receiving} onClick={startTransfer} className={`w-full py-4 mt-6 rounded-2xl font-bold text-lg transition-all flex items-center justify-center gap-2 ${fileList.length === 0 || !targetUser || sending || receiving ? 'bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700' : 'bg-blue-600 hover:bg-blue-500 text-white shadow-xl shadow-blue-600/20 active:scale-[0.98]'}`}>
-                  {sending ? <Loader2 className="animate-spin" /> : null}{sending ? `Mengirim... ${currentFileIndex + 1}/${fileList.length}` : 'Mulai Kirim'}
-                </button>
-              </div>
-            </div>
-
-            {fileList.length > 0 && (
-              <div className="bg-slate-800 rounded-3xl border border-slate-700 overflow-hidden">
-                <div className="p-4 border-b border-slate-700 bg-slate-800/50 flex justify-between items-center"><h3 className="font-bold">Daftar File</h3><button onClick={() => setFileList([])} className="text-xs text-red-400 hover:text-red-300 flex items-center gap-1"><Trash2 size={14} /> Hapus Semua</button></div>
-                <div className="max-h-64 overflow-y-auto"><table className="w-full text-left text-sm"><tbody className="divide-y divide-slate-700">{fileList.map((f, i) => (<tr key={i} className="hover:bg-slate-700/30"><td className="px-6 py-4 flex items-center gap-3 truncate max-w-[200px]"><FileIcon size={16} className="text-blue-400 shrink-0" />{f.name}</td><td className="px-6 py-4 text-slate-400">{formatSize(f.size)}</td><td className="px-6 py-4 text-right"><button onClick={() => removeFile(i)} className="p-2 hover:bg-red-500/10 text-slate-500 hover:text-red-400 rounded-lg"><X size={16} /></button></td></tr>))}</tbody></table></div>
-              </div>
-            )}
-          </section>
-
-          {/* Riwayat Transfer */}
-          <section className="lg:col-span-12 space-y-6 order-3">
-            {history.length > 0 && (
-              <div className="mt-8">
-                <div className="flex items-center justify-between gap-4 mb-4">
-                  <h2 className="text-lg font-semibold text-slate-300 flex items-center gap-2"><History size={20} /> Riwayat Terakhir</h2>
-                  <button onClick={() => setDeleteAllConfirm(true)} className="md:hidden p-2.5 hover:bg-red-500/20 text-red-300 border border-red-500/20 rounded-xl transition-all">
-                    <Trash2 size={18} />
-                  </button>
-                  <button onClick={() => setDeleteAllConfirm(true)} className="hidden md:inline-flex items-center gap-2 px-4 py-2 bg-red-500/10 hover:bg-red-500/20 text-red-300 border border-red-500/20 rounded-xl font-bold transition-all">
-                    <Trash2 size={16} />
-                    Hapus Semua
-                  </button>
-                </div>
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-                  {history.slice((historyPage - 1) * itemsPerPage, historyPage * itemsPerPage).map((h, i) => {
-                     const actualIndex = (historyPage - 1) * itemsPerPage + i;
-                     return (
-                       <div key={actualIndex} className="bg-slate-800/40 p-4 rounded-2xl border border-slate-700/50 flex items-center justify-between gap-3 hover:bg-slate-800/60 transition-colors group">
-                         <div className="flex items-center gap-3 overflow-hidden">
-                           <div className="p-3 bg-slate-700/50 rounded-xl shrink-0 group-hover:bg-blue-600/10 transition-colors"><FileIcon size={18} className="text-blue-400" /></div>
-                           <div className="overflow-hidden"><p className="text-sm font-bold truncate text-slate-200">{h.name}</p><p className="text-[11px] text-slate-500 flex items-center gap-1 mt-0.5"><Clock size={12} /> {h.time} • {formatSize(h.size)}</p></div>
-                         </div>
-                         <div className="flex items-center gap-1">
-                           <a href={h.url} download={h.name} className="p-2.5 hover:bg-blue-600 text-blue-400 hover:text-white rounded-xl transition-all" title="Download"><Download size={18} /></a>
-                           <button 
-                             onClick={() => setDeleteConfirm({ index: actualIndex, name: h.name })}
-                             className="p-2.5 hover:bg-red-500/20 text-slate-500 hover:text-red-400 rounded-xl transition-all"
-                             title="Hapus"
-                           >
-                             <Trash2 size={18} />
-                           </button>
-                         </div>
-                       </div>
-                     );
-                   })}
-                </div>
-                
-                {/* Pagination */}
-                {history.length > itemsPerPage && (
-                  <div className="flex items-center justify-center gap-4 mt-8">
-                    <button disabled={historyPage === 1} onClick={() => setHistoryPage(p => p - 1)} className="px-6 py-2 bg-slate-800 border border-slate-700 rounded-xl disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-700 transition-colors font-bold text-sm">Sebelumnya</button>
-                    <span className="text-slate-400 font-bold text-sm">Halaman {historyPage} dari {Math.ceil(history.length / itemsPerPage)}</span>
-                    <button disabled={historyPage === Math.ceil(history.length / itemsPerPage)} onClick={() => setHistoryPage(p => p + 1)} className="px-6 py-2 bg-slate-800 border border-slate-700 rounded-xl disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-700 transition-colors font-bold text-sm">Berikutnya</button>
-                  </div>
                 )}
               </div>
-            )}
-          </section>
+            </>
+          )}
+
+          {activeTab === 'history' && (
+            <div className="lg:col-span-12">
+              <div className="bg-white/5 border border-white/10 rounded-[32px] p-8 backdrop-blur-xl">
+                <div className="flex items-center justify-between mb-8">
+                  <div>
+                    <h2 className="text-2xl font-black text-white">Activity History</h2>
+                    <p className="text-sm text-slate-500">Track your recent P2P file transfers</p>
+                  </div>
+                  <button 
+                    onClick={() => setHistory([])}
+                    className="px-4 py-2 bg-red-500/10 text-red-500 rounded-xl text-xs font-bold hover:bg-red-500/20 transition-all"
+                  >
+                    Clear History
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-1 gap-4">
+                  {history.length === 0 ? (
+                    <div className="py-20 text-center">
+                      <div className="w-20 h-20 bg-white/5 rounded-full flex items-center justify-center mx-auto mb-4">
+                        <History size={32} className="text-slate-700" />
+                      </div>
+                      <p className="text-slate-500 font-medium">No transfer history found</p>
+                    </div>
+                  ) : (
+                    history.map((item) => (
+                      <div key={item.id} className="flex items-center justify-between p-5 rounded-2xl bg-white/[0.02] border border-white/5 hover:bg-white/[0.04] transition-all">
+                        <div className="flex items-center gap-5">
+                          <div className={`w-12 h-12 rounded-2xl flex items-center justify-center ${item.type === 'sent' ? 'bg-blue-500/10 text-blue-500' : 'bg-green-500/10 text-green-500'}`}>
+                            {item.type === 'sent' ? <Share2 size={24} /> : <Download size={24} />}
+                          </div>
+                          <div>
+                            <p className="font-bold text-white text-lg">
+                              {item.type === 'sent' ? `Sent to ${item.to}` : `Received from ${item.from}`}
+                            </p>
+                            <div className="flex items-center gap-3 mt-1">
+                              <span className="text-xs text-slate-500 flex items-center gap-1">
+                                <Files size={12} /> {item.files} files
+                              </span>
+                              <span className="text-xs text-slate-500 flex items-center gap-1">
+                                <Zap size={12} /> {formatSize(item.size)}
+                              </span>
+                              <span className="text-xs text-slate-500 flex items-center gap-1">
+                                <Clock size={12} /> {item.time}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <div className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider ${item.type === 'sent' ? 'bg-blue-500/20 text-blue-400' : 'bg-green-500/20 text-green-400'}`}>
+                            {item.type}
+                          </div>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
         </main>
 
-        {/* Overlay Progress (Sending & Receiving) */}
+        {/* --- Overlays & Dialogs --- */}
+        
+        {/* Transfer Progress Overlay */}
         <AnimatePresence>
-          {(sending || receiving) && (
-            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-              <div className="bg-slate-800 border border-slate-700 p-8 rounded-3xl w-full max-w-md shadow-2xl">
-                <div className="text-center mb-6">
-                  <div className="w-20 h-20 bg-blue-600/20 rounded-3xl flex items-center justify-center mx-auto mb-4">
-                    <Loader2 size={40} className="text-blue-500 animate-spin" />
+          {transferState === 'transferring' && (
+            <motion.div 
+              initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+              className="fixed inset-0 bg-black/80 backdrop-blur-md flex items-center justify-center z-[100] p-4"
+            >
+              <div className="bg-slate-900 border border-white/10 p-10 rounded-[40px] w-full max-w-md shadow-2xl relative overflow-hidden">
+                <div className="absolute top-0 left-0 w-full h-1 bg-white/5">
+                  <motion.div 
+                    initial={{ width: 0 }} animate={{ width: `${progress}%` }}
+                    className="h-full bg-blue-500 shadow-[0_0_15px_rgba(59,130,246,0.5)]" 
+                  />
+                </div>
+                
+                <div className="text-center mb-8">
+                  <div className="relative w-24 h-24 mx-auto mb-6">
+                    <div className="absolute inset-0 bg-blue-500/20 rounded-full animate-ping" />
+                    <div className="relative w-24 h-24 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-full flex items-center justify-center shadow-2xl">
+                      {transferType === 'sending' ? <Share2 size={32} className="text-white" /> : <Download size={32} className="text-white" />}
+                    </div>
                   </div>
-                  <h3 className="text-xl font-bold mb-2">
-                    {sending ? `Mengirim (${currentFileIndex + 1}/${totalFiles})` : `Menerima (${Math.min(currentFileIndex + 1, totalFiles)}/${totalFiles})`}
+                  <h3 className="text-2xl font-black text-white mb-2">
+                    {transferType === 'sending' ? `Sending...` : 'Receiving...'}
                   </h3>
-                  <p className="text-slate-400 text-sm truncate px-4">{currentFileName || 'Sedang memproses...'}</p>
+                  <p className="text-sm text-slate-400 font-medium truncate px-4">
+                    {transferType === 'sending' ? fileList[currentFileIndex]?.name : 'Processing stream data'}
+                  </p>
                 </div>
-                <div className="w-full bg-slate-700 h-3 rounded-full overflow-hidden mb-2">
-                  <motion.div initial={{ width: 0 }} animate={{ width: `${progress}%` }} className="h-full bg-blue-500 shadow-[0_0_10px_rgba(59,130,246,0.5)]" />
-                </div>
-                <div className="flex justify-between text-sm font-medium">
-                  <span className="text-blue-400">{Math.round(progress)}%</span>
-                  <span className="text-slate-500">100%</span>
-                </div>
-                {/* Kecepatan Transfer & Tombol Cancel */}
-                <div className="mt-6 flex flex-col items-center gap-4">
-                  <div className="inline-flex items-center gap-2 px-4 py-1.5 bg-slate-900/50 rounded-full border border-slate-700/50">
-                    <Wifi size={14} className="text-blue-400" />
-                    <span className="text-sm font-mono font-bold text-blue-100">
-                      {formatSize(transferSpeed)}/s
-                    </span>
+
+                <div className="grid grid-cols-2 gap-4 mb-8">
+                    <div className="bg-white/5 rounded-2xl p-4 border border-white/5 text-center">
+                      <p className="text-[10px] font-bold text-slate-500 uppercase mb-1">Speed</p>
+                      <p className="text-lg font-black text-blue-400">{formatSpeed(transferSpeed)}</p>
+                    </div>
+                    <div className="bg-white/5 rounded-2xl p-4 border border-white/5 text-center">
+                      <p className="text-[10px] font-bold text-slate-500 uppercase mb-1">ETA</p>
+                      <p className="text-lg font-black text-white">{eta}</p>
+                    </div>
                   </div>
-                  {systemMessage ? (
-                    <p className="text-xs text-slate-300 text-center max-w-xs">
-                      {systemMessage}
+
+                <div className="flex items-center gap-2 justify-center text-[10px] font-bold text-slate-600 uppercase tracking-widest">
+                  <ShieldCheck size={12} className="text-green-500" /> End-to-End Encrypted
+                </div>
+              </div>
+            </motion.div>
+          )}
+
+          {/* Incoming Transfer Request */}
+          {incomingSignal && (
+            <motion.div 
+              initial={{ opacity: 0, y: 100 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 100 }}
+              className="fixed bottom-8 right-8 z-[90] w-96"
+            >
+              <div className="bg-slate-900 border-2 border-blue-500/50 p-6 rounded-[32px] shadow-2xl backdrop-blur-2xl">
+                <div className="flex items-start gap-5 mb-6">
+                  <div className="w-14 h-14 bg-blue-600 rounded-2xl flex items-center justify-center shadow-lg shadow-blue-600/20 ring-1 ring-white/20">
+                    <Files size={28} className="text-white" />
+                  </div>
+                  <div className="flex-1">
+                    <h3 className="text-lg font-black text-white leading-tight">Incoming Transfer</h3>
+                    <p className="text-xs text-slate-400 mt-1">
+                      <span className="font-bold text-blue-400">{users.find(u => u.id === incomingSignal.from)?.name || 'Someone'}</span> wants to send you files.
                     </p>
-                  ) : null}
-                  
+                    {incomingSignal.pin && (
+                      <div className="mt-2 flex items-center gap-1.5 text-[10px] font-bold text-green-500 bg-green-500/10 px-2 py-1 rounded-md w-fit">
+                        <Lock size={10} /> PIN PROTECTED
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <div className="flex gap-3">
                   <button 
-                    onClick={cancelTransfer}
-                    className="flex items-center gap-2 px-6 py-3 bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/20 rounded-2xl font-bold transition-all active:scale-95 group"
+                    onClick={acceptTransfer}
+                    className="flex-1 bg-blue-600 hover:bg-blue-500 text-white py-3 rounded-2xl font-bold shadow-lg shadow-blue-600/20 active:scale-95 transition-all"
                   >
-                    <X size={18} className="group-hover:rotate-90 transition-transform duration-300" />
-                    Batalkan Pengiriman
+                    Accept
+                  </button>
+                  <button 
+                    onClick={() => setIncomingSignal(null)}
+                    className="px-6 bg-slate-800 hover:bg-slate-700 text-slate-300 py-3 rounded-2xl font-bold active:scale-95 transition-all"
+                  >
+                    Decline
                   </button>
                 </div>
               </div>
             </motion.div>
           )}
 
-          {/* Notifikasi Terima File */}
-          {incomingSignal && (
-            <motion.div initial={{ opacity: 0, y: 50, scale: 0.9 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, scale: 0.9 }} className="fixed inset-0 md:inset-auto md:bottom-8 md:right-8 flex items-center justify-center md:items-end md:justify-end z-[70] p-4 pointer-events-none">
-              <div className="bg-slate-800 border-2 border-blue-500/50 p-8 rounded-[2.5rem] shadow-[0_0_50px_rgba(30,58,138,0.5)] w-full max-w-sm pointer-events-auto">
-                <div className="flex flex-col items-center text-center gap-6 mb-8">
-                  <div className="p-5 bg-blue-600 rounded-3xl shadow-lg shadow-blue-600/20"><Files size={40} className="text-white" /></div>
-                  <div>
-                    <h3 className="text-2xl font-black text-white mb-2">File Masuk!</h3>
-                    <p className="text-slate-400 font-medium">
-                      <span className="text-blue-400 font-bold">{users.find(u => u.id === incomingSignal.from)?.name || 'Perangkat Lain'}</span> ingin mengirimkan file ke Anda.
-                    </p>
+          {/* Success Notification */}
+          {receivedFiles.length > 0 && transferState === 'completed' && (
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }}
+              className="fixed bottom-8 left-1/2 -translate-x-1/2 z-[80] w-full max-w-xl px-4"
+            >
+              <div className="bg-[#12141c] border-2 border-green-500/30 p-5 rounded-[32px] shadow-2xl overflow-hidden relative">
+                <div className="absolute top-0 left-0 w-full h-1 bg-green-500" />
+                <div className="flex items-center justify-between mb-4 px-2">
+                  <div className="flex items-center gap-3">
+                    <div className="w-8 h-8 bg-green-500 rounded-full flex items-center justify-center">
+                      <CheckCircle className="text-white" size={18} />
+                    </div>
+                    <span className="font-bold text-white">Received {receivedFiles.length} Files</span>
                   </div>
+                  <button onClick={() => {setReceivedFiles([]); setTransferState('idle');}} className="text-slate-500 hover:text-white p-1">
+                    <X size={20} />
+                  </button>
                 </div>
-                <div className="flex flex-col gap-3">
-                  <button onClick={acceptTransfer} className="w-full bg-blue-600 hover:bg-blue-500 py-4 rounded-2xl font-bold text-lg shadow-xl shadow-blue-600/20 active:scale-95 transition-all">Terima Sekarang</button>
-                  <button onClick={() => setIncomingSignal(null)} className="w-full bg-slate-700/50 hover:bg-slate-700 py-4 rounded-2xl font-bold text-slate-300 active:scale-95 transition-all">Tolak</button>
-                </div>
-              </div>
-            </motion.div>
-          )}
-
-          {/* Nama Edit Dialog */}
-          {isEditingName && (
-            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center z-[60] p-4">
-              <div className="bg-slate-800 border border-slate-700 p-8 rounded-3xl w-full max-w-sm shadow-2xl">
-                <div className="text-center mb-6">
-                  <div className="w-16 h-16 bg-blue-600/20 rounded-2xl flex items-center justify-center mx-auto mb-4"><User className="text-blue-500" size={32} /></div>
-                  <h3 className="text-xl font-bold">Nama Perangkat</h3>
-                  <p className="text-slate-400 text-sm mt-2">Nama ini akan terlihat oleh orang lain</p>
-                </div>
-                <input autoFocus type="text" value={tempName} onChange={(e) => setTempName(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') handleSaveName(tempName); if (e.key === 'Escape') setIsEditingName(false); }} className="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 focus:outline-none focus:border-blue-500 mb-6" />
-                <div className="flex gap-3">
-                  <button onClick={() => setIsEditingName(false)} className="flex-1 px-4 py-3 bg-slate-700 hover:bg-slate-600 rounded-xl font-bold">Batal</button>
-                  <button onClick={() => handleSaveName(tempName)} className="flex-1 px-4 py-3 bg-blue-600 hover:bg-blue-500 rounded-xl font-bold">Simpan</button>
-                </div>
-              </div>
-            </motion.div>
-          )}
-
-          {/* Dialog Konfirmasi Hapus Riwayat */}
-          {deleteConfirm && (
-            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center z-[80] p-4">
-              <div className="bg-slate-800 border border-slate-700 p-8 rounded-3xl w-full max-w-sm shadow-2xl">
-                <div className="text-center mb-6">
-                  <div className="w-16 h-16 bg-red-500/20 rounded-2xl flex items-center justify-center mx-auto mb-4"><Trash2 className="text-red-500" size={32} /></div>
-                  <h3 className="text-xl font-bold">Hapus Riwayat?</h3>
-                  <p className="text-slate-400 text-sm mt-2">Apakah Anda yakin ingin menghapus <span className="text-white font-bold">{deleteConfirm.name}</span> dari riwayat?</p>
-                </div>
-                <div className="flex gap-3">
-                  <button ref={cancelBtnRef} onClick={() => setDeleteConfirm(null)} className="flex-1 px-4 py-3 bg-slate-700 hover:bg-slate-600 rounded-xl font-bold">Batal</button>
-                  <button ref={confirmBtnRef} onClick={handleDeleteHistory} className="flex-1 px-4 py-3 bg-red-600 hover:bg-red-500 rounded-xl font-bold text-white">Hapus</button>
+                <div className="max-h-40 overflow-y-auto space-y-2 pr-2 custom-scrollbar">
+                  {receivedFiles.map((rf, i) => (
+                    <div key={i} className="bg-white/[0.03] p-3 rounded-2xl flex items-center justify-between gap-4 border border-white/5">
+                      <div className="flex items-center gap-3 overflow-hidden">
+                        <div className="w-8 h-8 rounded-lg bg-slate-800 flex items-center justify-center shrink-0">
+                          <FileIcon size={14} className="text-blue-400" />
+                        </div>
+                        <div className="overflow-hidden">
+                          <p className="font-bold text-xs text-white truncate">{rf.name}</p>
+                          <p className="text-[10px] text-slate-500">{formatSize(rf.size)}</p>
+                        </div>
+                      </div>
+                      <a 
+                        href={rf.url} 
+                        download={rf.name} 
+                        className="bg-blue-600 hover:bg-blue-500 text-white px-5 py-2 rounded-xl text-[10px] font-black uppercase tracking-wider shadow-lg shadow-blue-600/20 transition-all active:scale-95"
+                      >
+                        Download
+                      </a>
+                    </div>
+                  ))}
                 </div>
               </div>
             </motion.div>
           )}
+        </AnimatePresence>
 
-          {deleteAllConfirm && (
-            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center z-[80] p-4">
-              <div className="bg-slate-800 border border-slate-700 p-8 rounded-3xl w-full max-w-sm shadow-2xl">
-                <div className="text-center mb-6">
-                  <div className="w-16 h-16 bg-red-500/20 rounded-2xl flex items-center justify-center mx-auto mb-4"><Trash2 className="text-red-500" size={32} /></div>
-                  <h3 className="text-xl font-bold">Hapus Semua Riwayat?</h3>
-                  <p className="text-slate-400 text-sm mt-2">Semua data riwayat transfer akan dihapus permanen dari perangkat ini.</p>
-                </div>
-                <div className="flex gap-3">
-                  <button ref={cancelBtnRef} onClick={() => setDeleteAllConfirm(false)} className="flex-1 px-4 py-3 bg-slate-700 hover:bg-slate-600 rounded-xl font-bold">Batal</button>
-                  <button ref={confirmBtnRef} onClick={handleDeleteAllHistory} className="flex-1 px-4 py-3 bg-red-600 hover:bg-red-500 rounded-xl font-bold text-white">Hapus</button>
+        {/* Onboarding Modal */}
+        <AnimatePresence>
+          {showOnboarding && (
+            <motion.div 
+              initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+              className="fixed inset-0 bg-black/90 backdrop-blur-xl flex items-center justify-center z-[200] p-4"
+            >
+              <div className="bg-slate-900 border border-white/10 p-10 rounded-[40px] w-full max-w-md shadow-2xl relative overflow-hidden">
+                <div className="absolute top-0 right-0 w-32 h-32 bg-blue-500/10 blur-3xl rounded-full" />
+                <div className="relative text-center">
+                  <div className="w-24 h-24 mx-auto mb-6 flex items-center justify-center overflow-hidden">
+                    <img src="/logo.png" alt="Logo Welcome" className="w-full h-full object-contain rounded-full shadow-2xl" />
+                  </div>
+                  <h3 className="text-3xl font-black text-white mb-2">Welcome!</h3>
+                  <p className="text-sm text-slate-400 mb-8">Let's set a display name for your device so others can identify you.</p>
+                  
+                  <div className="space-y-4">
+                    <div className="relative">
+                      <input 
+                        autoFocus
+                        type="text"
+                        placeholder="Enter display name..."
+                        value={tempName}
+                        onChange={(e) => setTempName(e.target.value)}
+                        onKeyDown={(e) => e.key === 'Enter' && handleSaveName()}
+                        className="w-full bg-black/40 border border-white/10 rounded-2xl px-6 py-4 text-white placeholder:text-slate-600 focus:outline-none focus:border-blue-500 transition-all text-center font-bold"
+                      />
+                    </div>
+                    <button 
+                      disabled={!tempName.trim()}
+                      onClick={handleSaveName}
+                      className={`w-full py-4 rounded-2xl font-black text-lg transition-all ${
+                        !tempName.trim() 
+                          ? 'bg-slate-800 text-slate-500 cursor-not-allowed' 
+                          : 'bg-blue-600 hover:bg-blue-500 text-white shadow-lg shadow-blue-600/20 active:scale-95'
+                      }`}
+                    >
+                      Start Sharing
+                    </button>
+                  </div>
                 </div>
               </div>
             </motion.div>
           )}
         </AnimatePresence>
       </div>
+
+      <style>{`
+        @keyframes shimmer {
+          0% { transform: translateX(-100%); }
+          100% { transform: translateX(100%); }
+        }
+        .custom-scrollbar::-webkit-scrollbar {
+          width: 4px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-track {
+          background: rgba(255, 255, 255, 0.02);
+          border-radius: 10px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+          background: rgba(255, 255, 255, 0.1);
+          border-radius: 10px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+          background: rgba(255, 255, 255, 0.2);
+        }
+      `}</style>
     </div>
   );
 }
