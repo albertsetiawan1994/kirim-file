@@ -315,7 +315,7 @@ function App() {
 
     peer.on('connect', async () => {
       const handshakeDuration = Date.now() - startTime;
-      console.log(`[Handshake] Berhasil dalam ${handshakeDuration}ms`);
+      console.log(`[Handshake] Berhasil dalam ${handshakeDuration}ms (Reverse Mode)`);
       if (handshakeDuration < 500) {
         console.log('%c[Handshake] Ultra Cepat (<500ms)', 'color: #10b981; font-weight: bold');
       }
@@ -578,9 +578,9 @@ function App() {
       return;
     }
 
-    console.log('[Accept] Starting transfer accept process...');
-    setTransferState('transferring');
-    transferStateRef.current = 'transferring';
+    console.log('[Accept] Memulai reverse handshake - Receiver sebagai initiator...');
+    setTransferState('connecting');
+    transferStateRef.current = 'connecting';
     setTransferType('receiving');
     transferTypeRef.current = 'receiving';
     const { from, signal } = incomingSignal;
@@ -588,8 +588,9 @@ function App() {
     setVerifyPin('');
     setPinError(false);
 
+    // Receiver sebagai Initiator - pendekatan reverse handshake untuk menembus NAT
     const peer = new Peer({
-      initiator: false,
+      initiator: true, // REVERSED: Receiver yang memulai koneksi!
       trickle: true,
       config: PEER_CONFIG,
       allowHalfTrickle: true
@@ -602,25 +603,16 @@ function App() {
     setProcessedSize(0);
 
     peer.on('signal', (sig) => {
-      console.log(`[Accept Signal] type: ${sig?.type}`);
+      console.log(`[Reverse Signal] type: ${sig?.type}`);
+      if (sig.type === 'offer') {
+        console.log('[Reverse] Sending offer to initiator (sender)...');
+      }
       if (sig.candidate) {
         const mode = detectConnectionType(sig.candidate.candidate);
-        console.log(`[Accept ICE Candidate] Found: ${mode}`);
+        console.log(`[Reverse ICE Candidate] Found: ${mode}`);
         setConnectionMode(mode);
-        
-        // Fitur Baru: Share IP Gateway/Lokal secara eksplisit untuk mempercepat handshake
-        if (sig.candidate.candidate.includes('typ host')) {
-          const ipMatch = sig.candidate.candidate.match(/([0-9]{1,3}(\.[0-9]{1,3}){3})/);
-          if (ipMatch) {
-            console.log(`[Direct IP] Sharing Gateway/Local IP: ${ipMatch[1]}`);
-            socket.emit('signal', { 
-              to: from, 
-              from: me, 
-              signal: { type: 'control', action: 'direct-ip', ip: ipMatch[1] } 
-            });
-          }
-        }
       }
+      // Kirim sinyal balik langsung ke pengirim
       emitSignal(socket, from, me, sig);
     });
 
