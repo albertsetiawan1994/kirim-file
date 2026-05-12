@@ -14,7 +14,7 @@ export const PEER_CONFIG = {
     { urls: 'stun:stun.ideasip.com' },
     { urls: 'stun:stun.schlund.de' },
     {
-      // Free Global TURN Service (Alternative to Metered)
+      // Primary TURN (Metered)
       urls: [
         'turn:relay.metered.ca:80',
         'turn:relay.metered.ca:443',
@@ -24,7 +24,7 @@ export const PEER_CONFIG = {
       credential: 'openrelayproject'
     },
     {
-      // Second Failover TURN
+      // Failover TURN (Metered)
       urls: [
         'turn:openrelay.metered.ca:80',
         'turn:openrelay.metered.ca:443',
@@ -32,6 +32,14 @@ export const PEER_CONFIG = {
       ],
       username: 'openrelayproject',
       credential: 'openrelayproject'
+    },
+    {
+      // Backup STUNs
+      urls: [
+        'stun:stun.voiparound.com',
+        'stun:stun.voipbuster.com',
+        'stun:stun.voipstunt.com'
+      ]
     }
   ],
   iceCandidatePoolSize: 20,

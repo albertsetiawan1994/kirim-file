@@ -261,10 +261,17 @@ function App() {
       encryptionKeyRef.current = await generateKey('kirimfile-p2p', salt);
     }
 
+    // Force Relay (TURN) on final retry if cross-network still fails
+    const currentConfig = { ...PEER_CONFIG };
+    if (retryAttempt >= MAX_RETRIES - 1) {
+      console.warn('[Handshake] Memaksa mode Relay (TURN) untuk menembus NAT agresif...');
+      currentConfig.iceTransportPolicy = 'relay';
+    }
+
     const peer = new Peer({
       initiator: true,
       trickle: true,
-      config: PEER_CONFIG,
+      config: currentConfig,
       allowHalfTrickle: true
     });
 
