@@ -185,11 +185,18 @@ function App() {
     const now = Date.now();
     speedRef.current.bytes += bytes;
     const timeDiff = (now - speedRef.current.lastTime) / 1000;
-    if (timeDiff >= 1) {
-      setTransferSpeed(speedRef.current.bytes / timeDiff);
+    
+    // Update speed every 0.5 seconds for better stability
+    if (timeDiff >= 0.5) {
+      const bps = speedRef.current.bytes / timeDiff;
+      // Sanity check for NaN, Infinity or zero timeDiff
+      const validBps = isFinite(bps) ? bps : 0;
+      setTransferSpeed(validBps);
       speedRef.current.bytes = 0;
       speedRef.current.lastTime = now;
+      return validBps;
     }
+    return transferSpeed;
   };
 
   const startTransfer = async () => {
@@ -296,7 +303,7 @@ function App() {
                     const currentProgress = (offset / buffer.byteLength) * 100;
                     
                     // Throttle state updates and signaling to improve performance
-                    if (Date.now() - lastProgressUpdate > 200) {
+                    if (Date.now() - lastProgressUpdate > 200 || offset >= buffer.byteLength) {
                       setProgress(currentProgress);
                       setProcessedSize(offset);
                       setEta(calculateETA(buffer.byteLength, offset, currentSpeed));
@@ -309,6 +316,11 @@ function App() {
                         speed: currentSpeed 
                       }));
                       lastProgressUpdate = Date.now();
+                    }
+
+                    if (offset >= buffer.byteLength) {
+                      // Send end-of-file marker for this specific file
+                      peer.send(JSON.stringify({ type: 'control', action: 'eof', hash }));
                     }
 
                     if (peer.bufferSize < BUFFER_THRESHOLD / 2) {
@@ -480,6 +492,9 @@ function App() {
             setIsPaused(false);
           } else if (message.action === 'cancel') {
             handleCancelTransfer(false);
+          } else if (message.action === 'eof') {
+            console.log('EOF received for:', metadata?.name);
+            processReceivedFile();
           }
           return;
         }
@@ -512,56 +527,69 @@ function App() {
         const currentProgress = (receivedSize / metadata.size) * 100;
         setProgress(currentProgress);
         setEta(calculateETA(metadata.size, receivedSize, transferSpeed));
-
-        if (receivedSize >= metadata.size) {
-          let finalBuffer = receivedChunks;
-          if (isCompressed) {
-            // Gabungkan chunks dan dekompresi
-            const combined = new Uint8Array(receivedSize);
-            let offset = 0;
-            receivedChunks.forEach(c => {
-              combined.set(new Uint8Array(c), offset);
-              offset += c.byteLength;
-            });
-            finalBuffer = [decompressData(combined.buffer)];
-          }
-
-          const blob = new Blob(finalBuffer, { type: metadata.mime });
-          const url = URL.createObjectURL(blob);
-          setReceivedFiles(prev => [...prev, { name: metadata.name, url, size: metadata.size }]);
-          
-          currentFilesCount++;
-          if (currentFilesCount >= totalFiles) {
-            setTransferState('completed');
-            toast.success('Berhasil menerima semua file! Halaman akan dimuat ulang...');
-            
-            // Auto download
-            receivedFiles.forEach(file => {
-              const a = document.createElement('a');
-              a.href = file.url;
-              a.download = file.name;
-              document.body.appendChild(a);
-              a.click();
-              document.body.removeChild(a);
-            });
-
-            setHistory(prev => [{
-              id: Date.now(),
-              type: 'received',
-              from: users.find(u => u.id === from)?.name || 'Unknown',
-              files: totalFiles,
-              size: receivedSize,
-              time: new Date().toLocaleTimeString()
-            }, ...prev]);
-
-            // Auto refresh after download completes
-            setTimeout(() => {
-              window.location.reload();
-            }, 3000);
-          }
-        }
       }
     });
+
+    const processReceivedFile = async () => {
+      if (!metadata || receivedChunks.length === 0) return;
+
+      console.log('Processing received file:', metadata.name);
+      let finalBuffer = receivedChunks;
+      if (isCompressed) {
+        // Gabungkan chunks dan dekompresi
+        const combined = new Uint8Array(receivedSize);
+        let offset = 0;
+        receivedChunks.forEach(c => {
+          combined.set(new Uint8Array(c), offset);
+          offset += c.byteLength;
+        });
+        finalBuffer = [decompressData(combined.buffer)];
+      }
+
+      const blob = new Blob(finalBuffer, { type: metadata.mime });
+      const url = URL.createObjectURL(blob);
+      
+      // Update received files state safely
+      setReceivedFiles(prev => {
+        const newFiles = [...prev, { name: metadata.name, url, size: metadata.size }];
+        
+        // Auto download trigger if it's the last file or part of a batch
+        currentFilesCount++;
+        if (currentFilesCount >= totalFiles) {
+          setTransferState('completed');
+          toast.success('Berhasil menerima semua file! Halaman akan dimuat ulang...');
+          
+          // Trigger all downloads at once
+          newFiles.forEach(file => {
+            const a = document.createElement('a');
+            a.href = file.url;
+            a.download = file.name;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+          });
+
+          setHistory(hPrev => [{
+            id: Date.now(),
+            type: 'received',
+            from: users.find(u => u.id === from)?.name || 'Unknown',
+            files: totalFiles,
+            size: receivedSize,
+            time: new Date().toLocaleTimeString()
+          }, ...hPrev]);
+
+          setTimeout(() => {
+            window.location.reload();
+          }, 3000);
+        }
+        return newFiles;
+      });
+
+      // Reset for next file in batch
+      metadata = null;
+      receivedChunks = [];
+      receivedSize = 0;
+    };
 
     peer.signal(signal);
   };
