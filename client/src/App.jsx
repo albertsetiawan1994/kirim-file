@@ -70,7 +70,7 @@ function App() {
   // --- Refs ---
   const peerRef = useRef();
   const fileInputRef = useRef();
-  const speedRef = useRef({ bytes: 0, lastTime: Date.now() });
+  const speedRef = useRef({ bytes: 0, lastTime: Date.now(), window: [] });
   const encryptionKeyRef = useRef(null);
   const socketRef = useRef(null);
   const isPausedRef = useRef(false);
@@ -196,19 +196,23 @@ function App() {
     speedRef.current.bytes += bytes;
     const timeDiff = (now - speedRef.current.lastTime) / 1000;
     
-    if (timeDiff >= 0.25) { // Updated to 250ms for better balance
+    // High-frequency sampling (every 50ms) for real-time responsiveness
+    if (timeDiff >= 0.05) {
       const bps = speedRef.current.bytes / timeDiff;
       const validBps = isFinite(bps) ? bps : 0;
       
-      // Moving average for smoother UI (80% old, 20% new)
-      setTransferSpeed(prev => {
-        if (prev === 0) return validBps;
-        return (prev * 0.8) + (validBps * 0.2);
-      });
+      // Implement sliding window average (last 20 samples = ~1 second at 50ms)
+      const window = speedRef.current.window;
+      window.push(validBps);
+      if (window.length > 20) window.shift();
+      
+      const averageBps = window.reduce((a, b) => a + b, 0) / window.length;
+      
+      setTransferSpeed(averageBps < 1 ? 0 : averageBps);
       
       speedRef.current.bytes = 0;
       speedRef.current.lastTime = now;
-      return validBps;
+      return averageBps;
     }
     return transferSpeed;
   };
@@ -330,9 +334,7 @@ function App() {
                       peer.send(JSON.stringify({ 
                         type: 'progress', 
                         progress: currentProgress, 
-                        processed: offset, 
-                        speed: transferSpeed, // Sending smoothed speed
-                        eta: currentEta
+                        processed: offset
                       }));
                       lastProgressUpdate = Date.now();
                     }
@@ -524,7 +526,7 @@ function App() {
           setProcessedSize(0);
           isCompressed = false;
           // Reset speed calculation for new file
-          speedRef.current = { bytes: 0, lastTime: Date.now() };
+          speedRef.current = { bytes: 0, lastTime: Date.now(), window: [] };
           return;
         }
         if (message.type === 'control') {
@@ -546,16 +548,15 @@ function App() {
         }
         if (message.type === 'progress') {
           lastProgressTime = Date.now();
+          // Decoupled: Receiver only takes progress/processed as reference
+          // but calculates its own speed and ETA locally for better accuracy
           if (transferType === 'receiving') {
-            // Receiver updates progress bar from sender's authoritative data
             setProgress(message.progress);
             setProcessedSize(message.processed);
           } else {
-            // Sender updates from receiver's feedback if any
+            // Sender updates from receiver's feedback if any (though currently one-way)
             setProgress(message.progress);
             setProcessedSize(message.processed);
-            setTransferSpeed(message.speed);
-            if (message.eta) setEta(message.eta);
           }
           return;
         }
@@ -708,7 +709,7 @@ function App() {
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <h1 className="text-xl font-bold tracking-tight text-white">KirimFile<span className="text-blue-500">.</span></h1>
+                <h1 className="text-xl font-bold tracking-tight text-white">Kirim File</h1>
               </div>
               <div className="flex items-center gap-2 text-[10px] font-medium uppercase tracking-wider">
                 <span className={`flex h-1.5 w-1.5 rounded-full ${isConnected ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} />
@@ -1111,30 +1112,30 @@ function App() {
                     </div>
                   ) : (
                     history.map((item) => (
-                      <div key={item.id} className="flex items-center justify-between p-5 rounded-2xl bg-white/[0.02] border border-white/5 hover:bg-white/[0.04] transition-all">
-                        <div className="flex items-center gap-5">
-                          <div className={`w-12 h-12 rounded-2xl flex items-center justify-center ${item.type === 'sent' ? 'bg-blue-500/10 text-blue-500' : 'bg-green-500/10 text-green-500'}`}>
-                            {item.type === 'sent' ? <Share2 size={24} /> : <Download size={24} />}
+                      <div key={item.id} className="flex flex-col sm:flex-row sm:items-center justify-between p-4 sm:p-5 rounded-2xl bg-white/[0.02] border border-white/5 hover:bg-white/[0.04] transition-all gap-4">
+                        <div className="flex items-center gap-4 sm:gap-5">
+                          <div className={`w-10 h-10 sm:w-12 sm:h-12 rounded-xl sm:rounded-2xl flex items-center justify-center shrink-0 ${item.type === 'sent' ? 'bg-blue-500/10 text-blue-500' : 'bg-green-500/10 text-green-500'}`}>
+                            {item.type === 'sent' ? <Share2 size={20} className="sm:size-[24px]" /> : <Download size={20} className="sm:size-[24px]" />}
                           </div>
-                          <div>
-                            <p className="font-bold text-white text-lg">
+                          <div className="min-w-0">
+                            <p className="font-bold text-white text-base sm:text-lg truncate">
                               {item.type === 'sent' ? `Sent to ${item.to}` : `Received from ${item.from}`}
                             </p>
-                            <div className="flex items-center gap-3 mt-1">
-                              <span className="text-xs text-slate-500 flex items-center gap-1">
-                                <Files size={12} /> {item.files} files
+                            <div className="flex flex-wrap items-center gap-2 sm:gap-3 mt-1">
+                              <span className="text-[10px] sm:text-xs text-slate-500 flex items-center gap-1">
+                                <Files size={10} className="sm:size-[12px]" /> {item.files} files
                               </span>
-                              <span className="text-xs text-slate-500 flex items-center gap-1">
-                                <Zap size={12} /> {formatSize(item.size)}
+                              <span className="text-[10px] sm:text-xs text-slate-500 flex items-center gap-1">
+                                <Zap size={10} className="sm:size-[12px]" /> {formatSize(item.size)}
                               </span>
-                              <span className="text-xs text-slate-500 flex items-center gap-1">
-                                <Clock size={12} /> {item.time}
+                              <span className="text-[10px] sm:text-xs text-slate-500 flex items-center gap-1">
+                                <Clock size={10} className="sm:size-[12px]" /> {item.time}
                               </span>
                             </div>
                           </div>
                         </div>
-                        <div className="flex items-center gap-2">
-                          <div className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider ${item.type === 'sent' ? 'bg-blue-500/20 text-blue-400' : 'bg-green-500/20 text-green-400'}`}>
+                        <div className="flex items-center gap-2 self-end sm:self-center">
+                          <div className={`px-3 py-1 rounded-full text-[9px] sm:text-[10px] font-black uppercase tracking-wider ${item.type === 'sent' ? 'bg-blue-500/20 text-blue-400' : 'bg-green-500/20 text-green-400'}`}>
                             {item.type}
                           </div>
                         </div>
