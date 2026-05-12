@@ -62,6 +62,9 @@ function App() {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [verifyPin, setVerifyPin] = useState('');
   const [pinError, setPinError] = useState(false);
+  const [isPaused, setIsPaused] = useState(false);
+  const [currentFileMetadata, setCurrentFileMetadata] = useState(null);
+  const [processedBytes, setProcessedSize] = useState(0);
   
   // --- Refs ---
   const peerRef = useRef();
@@ -69,6 +72,8 @@ function App() {
   const speedRef = useRef({ bytes: 0, lastTime: Date.now() });
   const encryptionKeyRef = useRef(null);
   const socketRef = useRef(null);
+  const isPausedRef = useRef(false);
+  const isCancelledRef = useRef(false);
 
   // --- Socket Setup ---
   useEffect(() => {
@@ -191,6 +196,10 @@ function App() {
     
     setTransferState('connecting');
     setTransferType('sending');
+    isPausedRef.current = false;
+    isCancelledRef.current = false;
+    setIsPaused(false);
+    setProcessedSize(0);
     
     // Generate Encryption Key if Secure
     if (isSecure) {
@@ -219,17 +228,19 @@ function App() {
       peer.send(JSON.stringify({ type: 'batch-start', count: fileList.length, isSecure }));
 
       for (let i = 0; i < fileList.length; i++) {
+        if (isCancelledRef.current) break;
         setCurrentFileIndex(i);
         const file = fileList[i];
         const hash = await calculateHash(file);
         
-        peer.send(JSON.stringify({
-          type: 'metadata',
+        const metadata = {
           name: file.name,
           size: file.size,
           mime: file.type || 'application/octet-stream',
           hash
-        }));
+        };
+        setCurrentFileMetadata(metadata);
+        peer.send(JSON.stringify({ type: 'metadata', ...metadata }));
 
         await new Promise((resolve, reject) => {
           const reader = new FileReader();
@@ -249,8 +260,13 @@ function App() {
             const sendChunk = async () => {
               try {
                 while (offset < buffer.byteLength) {
-                  if (peer.destroyed) {
-                    reject(new Error('Koneksi terputus'));
+                  if (isCancelledRef.current || peer.destroyed) {
+                    reject(new Error('Transfer dibatalkan'));
+                    return;
+                  }
+
+                  if (isPausedRef.current) {
+                    setTimeout(sendChunk, 500);
                     return;
                   }
 
@@ -277,7 +293,11 @@ function App() {
                   
                   const currentProgress = (offset / buffer.byteLength) * 100;
                   setProgress(currentProgress);
+                  setProcessedSize(offset);
                   setEta(calculateETA(buffer.byteLength, offset, transferSpeed));
+
+                  // Send progress to receiver
+                  peer.send(JSON.stringify({ type: 'progress', progress: currentProgress, processed: offset, speed: transferSpeed }));
 
                   if (peer.bufferSize < BUFFER_THRESHOLD / 2) {
                     chunkSize = Math.min(MAX_CHUNK_SIZE, chunkSize + 4096);
@@ -294,17 +314,31 @@ function App() {
         });
       }
 
-      setTransferState('completed');
-      toast.success('Semua file berhasil dikirim!');
-      setHistory(prev => [{
-        id: Date.now(),
-        type: 'sent',
-        to: targetUser.name,
-        files: fileList.length,
-        size: fileList.reduce((acc, f) => acc + f.size, 0),
-        time: new Date().toLocaleTimeString()
-      }, ...prev]);
-      setFileList([]);
+      if (!isCancelledRef.current) {
+        setTransferState('completed');
+        toast.success('Semua file berhasil dikirim!');
+        setHistory(prev => [{
+          id: Date.now(),
+          type: 'sent',
+          to: targetUser.name,
+          files: fileList.length,
+          size: fileList.reduce((acc, f) => acc + f.size, 0),
+          time: new Date().toLocaleTimeString()
+        }, ...prev]);
+        setFileList([]);
+      }
+    });
+
+    peer.on('data', (data) => {
+      const parsed = parseMessage(data);
+      if (parsed.type === 'json') {
+        const msg = parsed.message;
+        if (msg.type === 'control') {
+          if (msg.action === 'pause') { isPausedRef.current = true; setIsPaused(true); }
+          if (msg.action === 'resume') { isPausedRef.current = false; setIsPaused(false); }
+          if (msg.action === 'cancel') { handleCancelTransfer(false); }
+        }
+      }
     });
 
     peer.on('error', (err) => {
@@ -314,11 +348,35 @@ function App() {
     });
     
     peer.on('close', () => {
-      if (transferState === 'transferring') {
-        toast.error('Koneksi terputus! Mencoba resume...');
-        // Logika resume bisa ditambahkan di sini dengan menyimpan offset terakhir
+      if (transferState === 'transferring' && !isCancelledRef.current) {
+        toast.error('Koneksi terputus!');
+        setTransferState('error');
       }
     });
+  };
+
+  const handlePauseResume = () => {
+    const newState = !isPaused;
+    setIsPaused(newState);
+    isPausedRef.current = newState;
+    if (peerRef.current) {
+      peerRef.current.send(JSON.stringify({ type: 'control', action: newState ? 'pause' : 'resume' }));
+    }
+  };
+
+  const handleCancelTransfer = (notifyPeer = true) => {
+    isCancelledRef.current = true;
+    if (notifyPeer && peerRef.current) {
+      try { peerRef.current.send(JSON.stringify({ type: 'control', action: 'cancel' })); } catch(e) {}
+    }
+    if (peerRef.current) {
+      peerRef.current.destroy();
+      peerRef.current = null;
+    }
+    setTransferState('idle');
+    setProgress(0);
+    setProcessedSize(0);
+    toast.error('Transfer dibatalkan');
   };
 
   const acceptTransfer = () => {
@@ -342,6 +400,11 @@ function App() {
     });
 
     peerRef.current = peer;
+    isPausedRef.current = false;
+    isCancelledRef.current = false;
+    setIsPaused(false);
+    setProcessedSize(0);
+
     peer.on('signal', (signal) => {
       if (signal.candidate) {
         const mode = detectConnectionType(signal.candidate.candidate);
@@ -369,14 +432,32 @@ function App() {
         }
         if (message.type === 'metadata') {
           metadata = message;
+          setCurrentFileMetadata(message);
           receivedChunks = [];
           receivedSize = 0;
           setProgress(0);
+          setProcessedSize(0);
           isCompressed = false;
           return;
         }
-        if (message.type === 'control' && message.action === 'compressed') {
-          isCompressed = true;
+        if (message.type === 'control') {
+          if (message.action === 'compressed') {
+            isCompressed = true;
+          } else if (message.action === 'pause') {
+            isPausedRef.current = true;
+            setIsPaused(true);
+          } else if (message.action === 'resume') {
+            isPausedRef.current = false;
+            setIsPaused(false);
+          } else if (message.action === 'cancel') {
+            handleCancelTransfer(false);
+          }
+          return;
+        }
+        if (message.type === 'progress') {
+          setProgress(message.progress);
+          setProcessedSize(message.processed);
+          setTransferSpeed(message.speed);
           return;
         }
       }
@@ -423,6 +504,17 @@ function App() {
           if (currentFilesCount >= totalFiles) {
             setTransferState('completed');
             toast.success('Berhasil menerima semua file!');
+            
+            // Auto download
+            receivedFiles.forEach(file => {
+              const a = document.createElement('a');
+              a.href = file.url;
+              a.download = file.name;
+              document.body.appendChild(a);
+              a.click();
+              document.body.removeChild(a);
+            });
+
             setHistory(prev => [{
               id: Date.now(),
               type: 'received',
@@ -950,20 +1042,36 @@ function App() {
                     {transferType === 'sending' ? `Sending...` : 'Receiving...'}
                   </h3>
                   <p className="text-sm text-slate-400 font-medium truncate px-4">
-                    {transferType === 'sending' ? fileList[currentFileIndex]?.name : 'Processing stream data'}
+                    {currentFileMetadata ? currentFileMetadata.name : 'Processing stream data'}
+                  </p>
+                  <p className="text-[10px] text-slate-500 mt-2 font-bold uppercase tracking-widest">
+                    {formatSize(processedBytes)} / {currentFileMetadata ? formatSize(currentFileMetadata.size) : '--'}
                   </p>
                 </div>
 
-                <div className="grid grid-cols-2 gap-4 mb-8">
-                    <div className="bg-white/5 rounded-2xl p-4 border border-white/5 text-center">
-                      <p className="text-[10px] font-bold text-slate-500 uppercase mb-1">Speed</p>
-                      <p className="text-lg font-black text-blue-400">{formatSpeed(transferSpeed)}</p>
-                    </div>
-                    <div className="bg-white/5 rounded-2xl p-4 border border-white/5 text-center">
-                      <p className="text-[10px] font-bold text-slate-500 uppercase mb-1">ETA</p>
-                      <p className="text-lg font-black text-white">{eta}</p>
-                    </div>
+                <div className="flex flex-col gap-4 mb-8">
+                  <div className="bg-white/5 rounded-2xl p-6 border border-white/5 text-center w-full">
+                    <p className="text-[10px] font-bold text-slate-500 uppercase mb-2">Kecepatan Kirim</p>
+                    <p className="text-3xl font-black text-blue-400">{formatSpeed(transferSpeed)}</p>
                   </div>
+                  
+                  <div className="flex gap-3">
+                    <button 
+                      onClick={handlePauseResume}
+                      className="flex-1 bg-white/5 hover:bg-white/10 text-white py-3 rounded-2xl font-bold flex items-center justify-center gap-2 transition-all border border-white/10"
+                    >
+                      {isPaused ? <Zap size={18} className="text-yellow-400" /> : <Clock size={18} className="text-blue-400" />}
+                      {isPaused ? 'Lanjut' : 'Jeda'}
+                    </button>
+                    <button 
+                      onClick={() => handleCancelTransfer(true)}
+                      className="flex-1 bg-red-500/10 hover:bg-red-500/20 text-red-500 py-3 rounded-2xl font-bold flex items-center justify-center gap-2 transition-all border border-red-500/20"
+                    >
+                      <X size={18} />
+                      Batal
+                    </button>
+                  </div>
+                </div>
 
                 <div className="flex items-center gap-2 justify-center text-[10px] font-bold text-slate-600 uppercase tracking-widest">
                   <ShieldCheck size={12} className="text-green-500" /> End-to-End Encrypted
