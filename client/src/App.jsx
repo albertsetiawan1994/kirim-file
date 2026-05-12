@@ -291,13 +291,13 @@ function App() {
             const isCompressed = false; 
 
             let offset = 0;
-              let chunkSize = 131072; // Start with 128KB for high speed
+              let chunkSize = MIN_CHUNK_SIZE;
               let lastProgressUpdate = 0;
 
               const sendChunk = async () => {
                 try {
-                  // Pipeline multiple chunks for higher throughput
-                  const pipelineSize = 4; 
+                  // Pipeline multiple chunks for extreme throughput
+                  const pipelineSize = 8; 
                   
                   while (offset < buffer.byteLength) {
                     if (isCancelledRef.current || peer.destroyed) {
@@ -310,8 +310,9 @@ function App() {
                       return;
                     }
 
+                    // Adaptive buffer management
                     if (peer.bufferSize > BUFFER_THRESHOLD) {
-                      const delay = Math.min(200, 20 + (peer.bufferSize / 1024 / 10));
+                      const delay = Math.min(100, 10 + (peer.bufferSize / 1024 / 20));
                       setTimeout(sendChunk, delay);
                       return;
                     }
@@ -354,13 +355,15 @@ function App() {
                       peer.send(JSON.stringify({ type: 'control', action: 'eof', hash }));
                     }
 
-                    // Faster chunk growth
+                    // Aggressive chunk growth for high-speed networks
                     if (peer.bufferSize < BUFFER_THRESHOLD / 2) {
-                      chunkSize = Math.min(MAX_CHUNK_SIZE, chunkSize + 16384);
+                      chunkSize = Math.min(MAX_CHUNK_SIZE, chunkSize * 2);
+                    } else if (peer.bufferSize > BUFFER_THRESHOLD * 0.8) {
+                      chunkSize = Math.max(MIN_CHUNK_SIZE, Math.floor(chunkSize * 0.8));
                     }
                     
-                    // Yield to UI thread occasionally
-                    if (offset % (chunkSize * 10) === 0) {
+                    // Yield to UI thread less frequently for higher throughput
+                    if (offset % (chunkSize * 20) === 0) {
                       await new Promise(r => setTimeout(r, 0));
                     }
                   }
