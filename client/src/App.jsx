@@ -73,11 +73,12 @@ function App() {
     const finalName = displayName || `${osName} ${deviceName}`;
     
     const newSocket = io(SIGNALING_URL, {
-      transports: ['polling', 'websocket'],
+      transports: ['websocket', 'polling'], // Prefer WebSocket
       secure: true,
       withCredentials: true,
       reconnectionAttempts: 10,
       reconnectionDelay: 2000,
+      timeout: 20000,
       forceNew: true
     });
 

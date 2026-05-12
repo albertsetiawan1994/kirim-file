@@ -14,13 +14,17 @@ app.get('/health', (req, res) => res.status(200).send('OK'));
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: ["https://kirim-file.web.app", "http://localhost:5173"],
+    origin: (origin, callback) => {
+      // Allow all origins for signaling server (safe as it only relays signals)
+      callback(null, true);
+    },
     methods: ["GET", "POST"],
     credentials: true
   },
   allowEIO3: true,
   pingTimeout: 60000,
-  pingInterval: 25000
+  pingInterval: 25000,
+  transports: ['websocket', 'polling'] // Prefer websocket
 });
 
 // Get local IP address
