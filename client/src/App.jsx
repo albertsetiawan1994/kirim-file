@@ -124,6 +124,8 @@ function App() {
     });
 
     newSocket.on('signal', ({ from, signal, pin }) => {
+      console.log(`[Signal] Received from ${from}, type: ${signal?.type}`);
+      
       // Handle Control Signals (Cancel, Error, etc) via Signaling Fallback
       if (signal && signal.type === 'control') {
         if (signal.action === 'cancel' || signal.action === 'force-refresh') {
@@ -135,13 +137,28 @@ function App() {
       }
 
       if (signal.type === 'offer') {
+        console.log('[Signal] Processing incoming offer...');
         setIncomingSignal({ from, signal, pin });
       } else if (peerRef.current) {
+        console.log('[Signal] Forwarding signal to peer...');
         peerRef.current.signal(signal);
       }
     });
 
-    newSocket.on('disconnect', () => setIsConnected(false));
+    newSocket.on('disconnect', () => {
+      console.warn('[Socket] Disconnected from signaling server');
+      setIsConnected(false);
+    });
+
+    // Handle signaling errors from server
+    newSocket.on('signal-error', ({ code }) => {
+      console.error('[Signal Error]', code);
+      if (code === 'RECIPIENT_OFFLINE') {
+        toast.error('Penerima sedang offline. Mencoba ulang...');
+        setTimeout(() => startTransfer(0), 2000);
+      }
+    });
+
     setSocket(newSocket);
     return () => newSocket.close();
   }, []);
@@ -538,6 +555,7 @@ function App() {
       return;
     }
 
+    console.log('[Accept] Starting transfer accept process...');
     setTransferState('transferring');
     transferStateRef.current = 'transferring';
     setTransferType('receiving');
@@ -550,7 +568,8 @@ function App() {
     const peer = new Peer({
       initiator: false,
       trickle: true,
-      config: PEER_CONFIG
+      config: PEER_CONFIG,
+      allowHalfTrickle: true
     });
 
     peerRef.current = peer;
@@ -559,12 +578,13 @@ function App() {
     setIsPaused(false);
     setProcessedSize(0);
 
-    peer.on('signal', (signal) => {
-      if (signal.candidate) {
-        const mode = detectConnectionType(signal.candidate.candidate);
+    peer.on('signal', (sig) => {
+      console.log(`[Accept Signal] type: ${sig?.type}`);
+      if (sig.candidate) {
+        const mode = detectConnectionType(sig.candidate.candidate);
         setConnectionMode(mode);
       }
-      emitSignal(socket, from, me, signal);
+      emitSignal(socket, from, me, sig);
     });
 
     // Proactive ICE Connection State Monitoring for Receiver
@@ -573,7 +593,6 @@ function App() {
         const state = peer._pc.iceConnectionState;
         console.log(`[Receiver ICE State] ${state}`);
         if (state === 'failed' || state === 'disconnected') {
-           // Receiver can also trigger renegotiate in modern WebRTC
            peer.renegotiate();
         }
       };

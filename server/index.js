@@ -106,9 +106,15 @@ io.on('connection', (socket) => {
   });
 
   socket.on('signal', ({ to, from, signal, pin }) => {
+    console.log(`[Signal] ${from} -> ${to}, type: ${signal?.type || 'unknown'}`);
     const recipient = users.get(to);
     if (recipient) {
       io.to(to).emit('signal', { from, signal, pin });
+      console.log(`[Signal] Delivered to ${recipient.name}`);
+    } else {
+      console.warn(`[Signal] Recipient ${to} not found online`);
+      // Notify sender that recipient is offline
+      io.to(from).emit('signal-error', { code: 'RECIPIENT_OFFLINE' });
     }
   });
 
