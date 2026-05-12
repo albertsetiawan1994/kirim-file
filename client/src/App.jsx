@@ -295,83 +295,90 @@ function App() {
               let lastProgressUpdate = 0;
 
               const sendChunk = async () => {
-                try {
-                  // Pipeline multiple chunks for extreme throughput
-                  const pipelineSize = 8; 
-                  
-                  while (offset < buffer.byteLength) {
-                    if (isCancelledRef.current || peer.destroyed) {
-                      reject(new Error('Transfer dibatalkan'));
-                      return;
-                    }
-
-                    if (isPausedRef.current) {
-                      setTimeout(sendChunk, 500);
-                      return;
-                    }
-
-                    // Adaptive buffer management
-                    if (peer.bufferSize > BUFFER_THRESHOLD) {
-                      const delay = Math.min(100, 10 + (peer.bufferSize / 1024 / 20));
-                      setTimeout(sendChunk, delay);
-                      return;
-                    }
-
-                    const promises = [];
-                    for (let p = 0; p < pipelineSize && offset < buffer.byteLength; p++) {
-                      const currentChunk = buffer.slice(offset, offset + chunkSize);
-                      let dataToSend = currentChunk;
-
-                      if (isSecure && encryptionKeyRef.current) {
-                        const iv = window.crypto.getRandomValues(new Uint8Array(12));
-                        const encrypted = await encryptChunk(encryptionKeyRef.current, currentChunk, iv);
-                        const combined = new Uint8Array(iv.length + encrypted.byteLength);
-                        combined.set(iv);
-                        combined.set(new Uint8Array(encrypted), iv.length);
-                        dataToSend = combined;
-                      }
-
-                      peer.send(dataToSend);
-                      offset += currentChunk.byteLength;
-                      updateSpeed(currentChunk.byteLength);
-                    }
-                    
-                    const currentProgress = (offset / buffer.byteLength) * 100;
-                    
-                    // Throttle sync messages (100ms) for high stability
-                    if (Date.now() - lastProgressUpdate > 100 || offset >= buffer.byteLength) {
-                      setProgress(currentProgress);
-                      setProcessedSize(offset);
-                      
-                      peer.send(JSON.stringify({ 
-                        type: 'progress', 
-                        progress: currentProgress, 
-                        processed: offset
-                      }));
-                      lastProgressUpdate = Date.now();
-                    }
-
-                    if (offset >= buffer.byteLength) {
-                      peer.send(JSON.stringify({ type: 'control', action: 'eof', hash }));
-                    }
-
-                    // Aggressive chunk growth for high-speed networks
-                    if (peer.bufferSize < BUFFER_THRESHOLD / 2) {
-                      chunkSize = Math.min(MAX_CHUNK_SIZE, chunkSize * 2);
-                    } else if (peer.bufferSize > BUFFER_THRESHOLD * 0.8) {
-                      chunkSize = Math.max(MIN_CHUNK_SIZE, Math.floor(chunkSize * 0.8));
-                    }
-                    
-                    // Yield to UI thread less frequently for higher throughput
-                    if (offset % (chunkSize * 20) === 0) {
-                      await new Promise(r => setTimeout(r, 0));
-                    }
-                  }
-                  resolve();
-                } catch (err) {
-                  reject(err);
-                }
-              };
+                 try {
+                   // Pipeline multiple chunks for balanced throughput
+                   const pipelineSize = 4; 
+                   
+                   while (offset < buffer.byteLength) {
+                     if (isCancelledRef.current || peer.destroyed) {
+                       reject(new Error('Transfer dibatalkan'));
+                       return;
+                     }
+ 
+                     if (isPausedRef.current) {
+                       setTimeout(sendChunk, 500);
+                       return;
+                     }
+ 
+                     // More conservative adaptive buffer management
+                     if (peer.bufferSize > BUFFER_THRESHOLD) {
+                       const delay = Math.min(250, 50 + (peer.bufferSize / 1024 / 10));
+                       setTimeout(sendChunk, delay);
+                       return;
+                     }
+ 
+                     const promises = [];
+                     for (let p = 0; p < pipelineSize && offset < buffer.byteLength; p++) {
+                       const currentChunk = buffer.slice(offset, offset + chunkSize);
+                       let dataToSend = currentChunk;
+ 
+                       if (isSecure && encryptionKeyRef.current) {
+                         const iv = window.crypto.getRandomValues(new Uint8Array(12));
+                         const encrypted = await encryptChunk(encryptionKeyRef.current, currentChunk, iv);
+                         const combined = new Uint8Array(iv.length + encrypted.byteLength);
+                         combined.set(iv);
+                         combined.set(new Uint8Array(encrypted), iv.length);
+                         dataToSend = combined;
+                       }
+ 
+                       try {
+                         peer.send(dataToSend);
+                         offset += currentChunk.byteLength;
+                         updateSpeed(currentChunk.byteLength);
+                       } catch (e) {
+                         console.error('Send error (buffer likely full):', e);
+                         // Immediate backoff
+                         setTimeout(sendChunk, 500);
+                         return;
+                       }
+                     }
+                     
+                     const currentProgress = (offset / buffer.byteLength) * 100;
+                     
+                     // Throttle sync messages (100ms) for high stability
+                     if (Date.now() - lastProgressUpdate > 100 || offset >= buffer.byteLength) {
+                       setProgress(currentProgress);
+                       setProcessedSize(offset);
+                       
+                       peer.send(JSON.stringify({ 
+                         type: 'progress', 
+                         progress: currentProgress, 
+                         processed: offset
+                       }));
+                       lastProgressUpdate = Date.now();
+                     }
+ 
+                     if (offset >= buffer.byteLength) {
+                       peer.send(JSON.stringify({ type: 'control', action: 'eof', hash }));
+                     }
+ 
+                     // Balanced chunk growth
+                     if (peer.bufferSize < BUFFER_THRESHOLD / 2) {
+                       chunkSize = Math.min(MAX_CHUNK_SIZE, chunkSize + 65536);
+                     } else if (peer.bufferSize > BUFFER_THRESHOLD * 0.7) {
+                       chunkSize = Math.max(MIN_CHUNK_SIZE, Math.floor(chunkSize * 0.5));
+                     }
+                     
+                     // Yield to UI thread regularly for stability
+                     if (offset % (chunkSize * 10) === 0) {
+                       await new Promise(r => setTimeout(r, 0));
+                     }
+                   }
+                   resolve();
+                 } catch (err) {
+                   reject(err);
+                 }
+               };
               sendChunk();
             };
             reader.readAsArrayBuffer(file);
@@ -425,7 +432,8 @@ function App() {
         peer.renegotiate();
       } else {
         setTransferState('error');
-        toast.error('Gagal mengirim file: Koneksi bermasalah');
+        toast.error('Koneksi terputus. Halaman akan dimuat ulang...');
+        setTimeout(() => window.location.reload(), 3000);
       }
     });
     
@@ -609,6 +617,13 @@ function App() {
           }
         }
       }
+    });
+
+    peer.on('error', (err) => {
+      console.error('Peer error:', err);
+      setTransferState('error');
+      toast.error('Koneksi terputus. Halaman akan dimuat ulang...');
+      setTimeout(() => window.location.reload(), 3000);
     });
 
     const processReceivedFile = async () => {

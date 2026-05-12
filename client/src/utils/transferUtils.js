@@ -90,10 +90,10 @@ export const decompressData = (data) => {
   }
 };
 
-// Ukuran chunk dioptimalkan untuk throughput ekstrim (128KB - 1MB)
-export const MIN_CHUNK_SIZE = 131072; 
-export const MAX_CHUNK_SIZE = 1048576;
-export const BUFFER_THRESHOLD = 16 * 1024 * 1024; // 16MB buffer limit for ultra-high-speed streaming
+// Ukuran chunk dioptimalkan untuk stabilitas dan kecepatan (64KB - 512KB)
+export const MIN_CHUNK_SIZE = 65536; 
+export const MAX_CHUNK_SIZE = 524288;
+export const BUFFER_THRESHOLD = 8 * 1024 * 1024; // 8MB buffer limit for stable streaming
 
 /**
  * Format ukuran file dengan presisi tinggi
