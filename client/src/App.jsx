@@ -395,14 +395,23 @@ function App() {
 
     peer.on('error', (err) => {
       console.error('Peer error:', err);
-      setTransferState('error');
-      toast.error('Gagal mengirim file: Koneksi bermasalah');
+      // Attempt ICE Restart on connection failure if transferring
+      if (transferState === 'transferring' && !isCancelledRef.current) {
+        console.log('Attempting ICE Restart...');
+        peer.renegotiate();
+      } else {
+        setTransferState('error');
+        toast.error('Gagal mengirim file: Koneksi bermasalah');
+      }
     });
     
     peer.on('close', () => {
       if (transferState === 'transferring' && !isCancelledRef.current) {
-        toast.error('Koneksi terputus!');
-        setTransferState('error');
+        console.log('Peer connection closed unexpectedly during transfer');
+        // Final fallback to refresh if restart fails
+        setTimeout(() => {
+          if (!isCancelledRef.current) handleCancelTransfer(false);
+        }, 5000);
       }
     });
   };
