@@ -261,6 +261,18 @@ function App() {
       emitSignal(socket, targetUser.id, me, signal, { pin: roomPin });
     });
 
+    // Proactive ICE Connection State Monitoring
+    if (peer._pc) {
+      peer._pc.oniceconnectionstatechange = () => {
+        const state = peer._pc.iceConnectionState;
+        console.log(`[ICE State] ${state}`);
+        if (state === 'failed' || state === 'disconnected') {
+          console.warn('[ICE] Koneksi bermasalah, mencoba renegotiate...');
+          peer.renegotiate();
+        }
+      };
+    }
+
     peer.on('connect', async () => {
       const handshakeDuration = Date.now() - startTime;
       console.log(`[Handshake] Berhasil dalam ${handshakeDuration}ms`);
@@ -554,6 +566,18 @@ function App() {
       }
       emitSignal(socket, from, me, signal);
     });
+
+    // Proactive ICE Connection State Monitoring for Receiver
+    if (peer._pc) {
+      peer._pc.oniceconnectionstatechange = () => {
+        const state = peer._pc.iceConnectionState;
+        console.log(`[Receiver ICE State] ${state}`);
+        if (state === 'failed' || state === 'disconnected') {
+           // Receiver can also trigger renegotiate in modern WebRTC
+           peer.renegotiate();
+        }
+      };
+    }
 
     let receivedChunks = [];
     let metadata = null;
