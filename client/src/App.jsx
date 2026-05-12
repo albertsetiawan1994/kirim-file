@@ -87,9 +87,10 @@ function App() {
       transports: ['websocket', 'polling'], // Prefer WebSocket
       secure: true,
       withCredentials: true,
-      reconnectionAttempts: 10,
-      reconnectionDelay: 2000,
-      timeout: 20000,
+      reconnectionAttempts: 20, // Increased for better stability
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 5000,
+      timeout: 15000,
       forceNew: true
     });
 
@@ -412,19 +413,26 @@ function App() {
       if (transferState === 'transferring' && !isCancelledRef.current) {
         console.log('Attempting ICE Restart...');
         peer.renegotiate();
+        
+        // If still error after timeout, force refresh
+        setTimeout(() => {
+          if (transferState !== 'completed' && !isCancelledRef.current) {
+            toast.error('Koneksi terputus secara permanen. Memuat ulang...');
+            setTimeout(() => window.location.reload(), 2000);
+          }
+        }, 8000);
       } else {
         setTransferState('error');
-        toast.error('Gagal mengirim file: Koneksi bermasalah');
+        toast.error('Gagal mengirim file: Koneksi bermasalah. Memuat ulang...');
+        setTimeout(() => window.location.reload(), 3000);
       }
     });
     
     peer.on('close', () => {
       if (transferState === 'transferring' && !isCancelledRef.current) {
         console.log('Peer connection closed unexpectedly during transfer');
-        // Final fallback to refresh if restart fails
-        setTimeout(() => {
-          if (!isCancelledRef.current) handleCancelTransfer(false);
-        }, 5000);
+        toast.error('Koneksi ditutup. Memuat ulang...');
+        setTimeout(() => window.location.reload(), 2000);
       }
     });
   };
@@ -671,6 +679,21 @@ function App() {
       receivedChunks = [];
       receivedSize = 0;
     };
+
+    peer.on('error', (err) => {
+      console.error('Receiver Peer error:', err);
+      if (transferState === 'transferring' && !isCancelledRef.current) {
+        toast.error('Koneksi terputus. Memuat ulang...');
+        setTimeout(() => window.location.reload(), 2000);
+      }
+    });
+
+    peer.on('close', () => {
+      if (transferState === 'transferring' && !isCancelledRef.current) {
+        toast.error('Koneksi ditutup. Memuat ulang...');
+        setTimeout(() => window.location.reload(), 2000);
+      }
+    });
 
     peer.signal(signal);
   };
