@@ -14,7 +14,6 @@ import {
   formatSize, 
   formatSpeed,
   getDeviceInfo, 
-  getTransferConfig,
   PEER_CONFIG, 
   emitSignal, 
   parseMessage, 
@@ -291,15 +290,14 @@ function App() {
             // Kompresi dinonaktifkan sesuai permintaan user
             const isCompressed = false; 
 
-            const config = getTransferConfig();
             let offset = 0;
-            let chunkSize = config.chunkSize;
-            let lastProgressUpdate = 0;
+              let chunkSize = MIN_CHUNK_SIZE; // Start with larger base chunk
+              let lastProgressUpdate = 0;
 
-            const sendChunk = async () => {
+              const sendChunk = async () => {
                 try {
-                  // Pipeline multiple chunks based on device config
-                  const pipelineSize = config.pipelineSize; 
+                  // Pipeline even more chunks for ultra throughput
+                  const pipelineSize = 8; 
                   
                   while (offset < buffer.byteLength) {
                     if (isCancelledRef.current || peer.destroyed) {
@@ -312,9 +310,8 @@ function App() {
                       return;
                     }
 
-                    // Adaptive buffer management based on device config
-                    if (peer.bufferSize > config.bufferThreshold) {
-                      const delay = Math.min(100, 10 + (peer.bufferSize / 1024 / 20));
+                    if (peer.bufferSize > BUFFER_THRESHOLD) {
+                      const delay = Math.min(200, 20 + (peer.bufferSize / 1024 / 10));
                       setTimeout(sendChunk, delay);
                       return;
                     }
@@ -333,16 +330,9 @@ function App() {
                         dataToSend = combined;
                       }
 
-                      try {
-                        peer.send(dataToSend);
-                        offset += currentChunk.byteLength;
-                        updateSpeed(currentChunk.byteLength);
-                      } catch (e) {
-                        console.error('Send error (buffer full):', e);
-                        // Backoff slightly to recover
-                        setTimeout(sendChunk, 100);
-                        return;
-                      }
+                      peer.send(dataToSend);
+                      offset += currentChunk.byteLength;
+                      updateSpeed(currentChunk.byteLength);
                     }
                     
                     const currentProgress = (offset / buffer.byteLength) * 100;
@@ -364,15 +354,13 @@ function App() {
                       peer.send(JSON.stringify({ type: 'control', action: 'eof', hash }));
                     }
 
-                    // Adaptive chunk growth limited by device max config
-                    if (peer.bufferSize < config.bufferThreshold / 2) {
-                      chunkSize = Math.min(config.chunkSize, chunkSize * 2);
-                    } else if (peer.bufferSize > config.bufferThreshold * 0.8) {
-                      chunkSize = Math.max(MIN_CHUNK_SIZE, Math.floor(chunkSize * 0.8));
+                    // More aggressive chunk growth
+                    if (peer.bufferSize < BUFFER_THRESHOLD / 2) {
+                      chunkSize = Math.min(MAX_CHUNK_SIZE, chunkSize + 65536);
                     }
                     
-                    // Yield to UI thread less frequently for throughput
-                    if (offset % (chunkSize * 20) === 0) {
+                    // Yield to UI thread occasionally
+                    if (offset % (chunkSize * 10) === 0) {
                       await new Promise(r => setTimeout(r, 0));
                     }
                   }
@@ -434,8 +422,7 @@ function App() {
         peer.renegotiate();
       } else {
         setTransferState('error');
-        toast.error('Koneksi terputus. Halaman akan dimuat ulang...');
-        setTimeout(() => window.location.reload(), 3000);
+        toast.error('Gagal mengirim file: Koneksi bermasalah');
       }
     });
     
@@ -619,13 +606,6 @@ function App() {
           }
         }
       }
-    });
-
-    peer.on('error', (err) => {
-      console.error('Peer error:', err);
-      setTransferState('error');
-      toast.error('Koneksi terputus. Halaman akan dimuat ulang...');
-      setTimeout(() => window.location.reload(), 3000);
     });
 
     const processReceivedFile = async () => {

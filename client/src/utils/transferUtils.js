@@ -90,21 +90,10 @@ export const decompressData = (data) => {
   }
 };
 
-/**
- * Konfigurasi transfer seragam untuk semua perangkat (Desktop & Mobile)
- */
-export const getTransferConfig = () => {
-  return {
-    chunkSize: 262144, // 256KB
-    bufferThreshold: 4 * 1024 * 1024, // 4MB
-    pipelineSize: 4
-  };
-};
-
-// Nilai default untuk inisialisasi awal
-export const MIN_CHUNK_SIZE = 65536; 
+// Ukuran chunk dioptimalkan untuk throughput ultra-tinggi (256KB - 1MB)
+export const MIN_CHUNK_SIZE = 262144; 
 export const MAX_CHUNK_SIZE = 1048576;
-export const BUFFER_THRESHOLD = 8 * 1024 * 1024; 
+export const BUFFER_THRESHOLD = 16 * 1024 * 1024; // 16MB buffer limit for ultra-speed streaming
 
 /**
  * Format ukuran file dengan presisi tinggi
