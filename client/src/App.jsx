@@ -126,12 +126,15 @@ function App() {
     newSocket.on('signal', ({ from, signal, pin }) => {
       console.log(`[Signal] Received from ${from}, type: ${signal?.type}`);
       
-      // Handle Control Signals (Cancel, Error, etc) via Signaling Fallback
+      // Handle Control Signals (Cancel, Error, Direct-IP, etc) via Signaling Fallback
       if (signal && signal.type === 'control') {
         if (signal.action === 'cancel' || signal.action === 'force-refresh') {
           const reason = signal.action === 'force-refresh' ? 'Koneksi lawan bermasalah' : 'Transfer dibatalkan';
           toast.error(`${reason}. Memuat ulang...`);
           setTimeout(() => window.location.reload(), 2000);
+        } else if (signal.action === 'direct-ip') {
+          console.log(`%c[Direct IP] Penerima berada di Gateway: ${signal.ip}`, 'color: #3b82f6; font-weight: bold');
+          // Optional: Bisa digunakan untuk mengoptimalkan MTU atau log diagnosa
         }
         return;
       }
@@ -596,10 +599,24 @@ function App() {
     setProcessedSize(0);
 
     peer.on('signal', (sig) => {
+      console.log(`[Accept Signal] type: ${sig?.type}`);
       if (sig.candidate) {
         const mode = detectConnectionType(sig.candidate.candidate);
         console.log(`[Accept ICE Candidate] Found: ${mode}`);
         setConnectionMode(mode);
+        
+        // Fitur Baru: Share IP Gateway/Lokal secara eksplisit untuk mempercepat handshake
+        if (sig.candidate.candidate.includes('typ host')) {
+          const ipMatch = sig.candidate.candidate.match(/([0-9]{1,3}(\.[0-9]{1,3}){3})/);
+          if (ipMatch) {
+            console.log(`[Direct IP] Sharing Gateway/Local IP: ${ipMatch[1]}`);
+            socket.emit('signal', { 
+              to: from, 
+              from: me, 
+              signal: { type: 'control', action: 'direct-ip', ip: ipMatch[1] } 
+            });
+          }
+        }
       }
       emitSignal(socket, from, me, sig);
     });
