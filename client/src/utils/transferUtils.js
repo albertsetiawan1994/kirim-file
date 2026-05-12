@@ -91,23 +91,13 @@ export const decompressData = (data) => {
 };
 
 /**
- * Konfigurasi transfer adaptif berdasarkan perangkat
+ * Konfigurasi transfer seragam untuk semua perangkat (Desktop & Mobile)
  */
 export const getTransferConfig = () => {
-  const { isMobile } = getDeviceInfo();
-  
-  if (isMobile) {
-    return {
-      chunkSize: 262144, // 256KB
-      bufferThreshold: 4 * 1024 * 1024, // 4MB
-      pipelineSize: 4
-    };
-  }
-  
   return {
-    chunkSize: 1048576, // 1MB
-    bufferThreshold: 16 * 1024 * 1024, // 16MB
-    pipelineSize: 8
+    chunkSize: 262144, // 256KB
+    bufferThreshold: 4 * 1024 * 1024, // 4MB
+    pipelineSize: 4
   };
 };
 
