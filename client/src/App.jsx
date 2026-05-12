@@ -510,6 +510,7 @@ function App() {
     let isCompressed = false;
 
     let lastProgressTime = Date.now();
+    let lastUIUpdateTime = 0; // Throttling UI updates for binary data
 
     peer.on('data', async (data) => {
       const parsed = parseMessage(data);
@@ -582,16 +583,22 @@ function App() {
       receivedSize += chunkSize;
       
       // Hitung kecepatan lokal secara real-time dari data biner yang masuk
-      const currentLocalSpeed = updateSpeed(chunkSize);
+      updateSpeed(chunkSize);
       
       if (metadata) {
         const currentProgress = (receivedSize / metadata.size) * 100;
         // Receiver relies on local binary flow for speed and ETA
         if (transferType === 'receiving') {
-          setProgress(currentProgress);
-          setProcessedSize(receivedSize);
-          setTransferSpeed(currentLocalSpeed);
-          setEta(calculateETA(metadata.size, receivedSize, currentLocalSpeed));
+          const now = Date.now();
+          // Throttle UI updates (100ms) to prevent UI lag and ensure stable ETA
+          if (now - lastUIUpdateTime > 100 || receivedSize >= metadata.size) {
+            setProgress(currentProgress);
+            setProcessedSize(receivedSize);
+            const currentSpeed = speedRef.current.currentSpeed;
+            setTransferSpeed(currentSpeed);
+            setEta(calculateETA(metadata.size, receivedSize, currentSpeed));
+            lastUIUpdateTime = now;
+          }
         }
       }
     });
