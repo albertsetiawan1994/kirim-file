@@ -56,7 +56,7 @@ export const detectConnectionType = (candidate) => {
   
   switch (type) {
     case 'host':
-      return 'Lokal';
+      return 'Local';
     case 'srflx':
       return 'Internet (STUN)';
     case 'relay':
@@ -76,16 +76,16 @@ export const calculateETA = (totalSize, uploadedSize, speed) => {
   const totalSeconds = Math.floor(remaining / speed);
   
   let text = '';
-  if (totalSeconds < 0) text = '0s';
-  else if (totalSeconds < 60) text = `${totalSeconds}s`;
+  if (totalSeconds < 0) text = '0d';
+  else if (totalSeconds < 60) text = `${totalSeconds}d`;
   else if (totalSeconds < 3600) {
     const minutes = Math.floor(totalSeconds / 60);
     const remainingSeconds = totalSeconds % 60;
-    text = `${minutes}m ${remainingSeconds}s`;
+    text = `${minutes}m ${remainingSeconds}d`;
   } else {
     const hours = Math.floor(totalSeconds / 3600);
     const remainingMinutes = Math.floor((totalSeconds % 3600) / 60);
-    text = `${hours}h ${remainingMinutes}m`;
+    text = `${hours}j ${remainingMinutes}m`;
   }
 
   return { text, seconds: totalSeconds };
@@ -112,18 +112,18 @@ export const decompressData = (data) => {
   }
 };
 
-// Ukuran chunk dioptimalkan untuk throughput tinggi (64KB - 256KB)
+// Ukuran chunk dioptimalkan untuk stabilitas (64KB)
 export const MIN_CHUNK_SIZE = 65536; 
-export const MAX_CHUNK_SIZE = 262144;
-export const BUFFER_THRESHOLD = 4 * 1024 * 1024; // 4MB buffer limit for high-speed streaming
+export const MAX_CHUNK_SIZE = 65536; // Lock at 64KB for maximum reliability across networks
+export const BUFFER_THRESHOLD = 2 * 1024 * 1024; // 2MB buffer limit for stability
 
 /**
  * Format ukuran file dengan presisi tinggi
  */
 export const formatSize = (bytes) => {
-  if (bytes === 0) return '0 Bytes';
+  if (bytes === 0) return '0 Byte';
   const k = 1024;
-  const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+  const sizes = ['Byte', 'KB', 'MB', 'GB', 'TB'];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(2))} ${sizes[i]}`;
 };
@@ -144,12 +144,12 @@ export const getDeviceInfo = () => {
   const ua = navigator.userAgent;
   const platform = navigator.platform;
   
-  let deviceName = 'Generic Device';
-  if (/Win/i.test(platform)) deviceName = 'Windows PC';
-  else if (/Mac/i.test(platform)) deviceName = 'Apple Mac';
-  else if (/Linux/i.test(platform)) deviceName = 'Linux Station';
-  else if (/Android/i.test(ua)) deviceName = 'Android Device';
-  else if (/iPhone|iPad|iPod/i.test(ua)) deviceName = 'iOS Device';
+  let deviceName = 'Perangkat Umum';
+  if (/Win/i.test(platform)) deviceName = 'PC Windows';
+  else if (/Mac/i.test(platform)) deviceName = 'Mac Apple';
+  else if (/Linux/i.test(platform)) deviceName = 'Stasiun Linux';
+  else if (/Android/i.test(ua)) deviceName = 'Perangkat Android';
+  else if (/iPhone|iPad|iPod/i.test(ua)) deviceName = 'Perangkat iOS';
 
   const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(ua);
   
@@ -231,17 +231,24 @@ export const emitSignal = (socket, to, from, signal, metadata = {}) => {
 };
 
 /**
- * Parser pesan data channel dengan proteksi type-safety
+ * Parser pesan data channel dengan proteksi type-safety menggunakan Header Byte
+ * 0x00 = JSON (Control/Metadata)
+ * 0x01 = Binary (File Chunk)
  */
 export const parseMessage = (data) => {
-  try {
-    const str = data instanceof Uint8Array ? new TextDecoder().decode(data) : data.toString();
-    if (str.startsWith('{') && str.endsWith('}')) {
+  const raw = data instanceof Uint8Array ? data : new Uint8Array(data);
+  const header = raw[0];
+  const payload = raw.slice(1);
+
+  if (header === 0x00) {
+    try {
+      const str = new TextDecoder().decode(payload);
       const message = JSON.parse(str);
       return { type: 'json', message };
+    } catch (e) {
+      console.error('[Protocol Error] Failed to parse JSON signal', e);
     }
-  } catch (e) {
-    // Not JSON or parse error
   }
-  return { type: 'binary', data };
+  
+  return { type: 'binary', data: payload };
 };

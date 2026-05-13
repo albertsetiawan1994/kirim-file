@@ -3,8 +3,8 @@ import io from 'socket.io-client';
 import Peer from 'simple-peer/simplepeer.min.js';
 import { 
   Monitor, Smartphone, FileUp, Download, X, CheckCircle, Loader2, 
-  Wifi, Share2, Files, Trash2, FileIcon, ShieldCheck, History, 
-  Settings, Info, Globe, Lock, Zap, Clock, AlertTriangle, ChevronRight,
+  Wifi, Share2, Files, Trash2, FileIcon, History, 
+  Info, Globe, Lock, Zap, Clock, AlertTriangle, ChevronRight,
   Menu, Bell, User, Plus, Search, Filter, RefreshCw, Edit2
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -20,9 +20,6 @@ import {
   MIN_CHUNK_SIZE,
   MAX_CHUNK_SIZE,
   BUFFER_THRESHOLD,
-  generateKey,
-  encryptChunk,
-  decryptChunk,
   calculateHash,
   isLocalIP,
   detectConnectionType,
@@ -40,7 +37,6 @@ function App() {
   const [users, setUsers] = useState([]);
   const [targetUser, setTargetUser] = useState(null);
   const [fileList, setFileList] = useState([]);
-  const [activeTab, setActiveTab] = useState('transfer'); // transfer, history, settings
   const [transferState, setTransferState] = useState('idle'); // idle, connecting, transferring, completed, error
   const [transferType, setTransferType] = useState('sending'); // sending, receiving
   const [progress, setProgress] = useState(0);
@@ -52,20 +48,20 @@ function App() {
   const [isConnected, setIsConnected] = useState(false);
   const [connectionMode, setConnectionMode] = useState('Detecting...'); // Lokal, Internet (STUN), Internet (TURN)
   const [roomPin, setRoomPin] = useState('');
-  const [isSecure, setIsSecure] = useState(true);
   const [displayName, setDisplayName] = useState(() => localStorage.getItem('userDisplayName') || '');
   const [showOnboarding, setShowOnboarding] = useState(() => !localStorage.getItem('userDisplayName'));
   const [tempName, setTempName] = useState('');
   const [isEditingName, setIsEditingName] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [eta, setEta] = useState('--:--');
-  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [verifyPin, setVerifyPin] = useState('');
   const [pinError, setPinError] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const [currentFileMetadata, setCurrentFileMetadata] = useState(null);
   const [processedBytes, setProcessedSize] = useState(0);
   const [isDownloadClicked, setIsDownloadClicked] = useState(false);
+  const [gatewayIP, setGatewayIP] = useState('');
+  const wakeLockRef = useRef(null);
   
   // --- Refs ---
   const peerRef = useRef();
@@ -81,8 +77,100 @@ function App() {
     const retryCountRef = useRef(0);
   const MAX_RETRIES = 3;
 
+  // --- Helpers for Data Channel Protocol ---
+  const sendPeerJSON = (peer, data) => {
+    if (!peer || peer.destroyed) return;
+    try {
+      const json = JSON.stringify(data);
+      const payload = new TextEncoder().encode(json);
+      const msg = new Uint8Array(payload.length + 1);
+      msg[0] = 0x00; // Header for JSON
+      msg.set(payload, 1);
+      peer.send(msg);
+    } catch (e) {
+      // console.error('[Protocol] Failed to send JSON to peer', e);
+    }
+  };
+
+  const sendPeerBinary = (peer, data) => {
+    if (!peer || peer.destroyed) return;
+    try {
+      const raw = data instanceof Uint8Array ? data : new Uint8Array(data);
+      const msg = new Uint8Array(raw.length + 1);
+      msg[0] = 0x01; // Header for Binary
+      msg.set(raw, 1);
+      peer.send(msg);
+    } catch (e) {
+      // console.error('[Protocol] Failed to send Binary to peer', e);
+    }
+  };
+
+  // --- Wake Lock & Background Persistence ---
+  useEffect(() => {
+    const requestWakeLock = async () => {
+      try {
+        if ('wakeLock' in navigator) {
+          wakeLockRef.current = await navigator.wakeLock.request('screen');
+          // console.log('Wake Lock is active');
+        }
+      } catch (err) {
+        // Silent
+      }
+    };
+
+    // Re-request wake lock when page becomes visible again
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        requestWakeLock();
+      }
+    };
+
+    requestWakeLock();
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      if (wakeLockRef.current) wakeLockRef.current.release();
+    };
+  }, []);
+
   // --- Socket Setup ---
   useEffect(() => {
+    const fetchGatewayIP = async () => {
+      try {
+        const services = [
+          'https://api.ipify.org?format=json',
+          'https://api.seeip.org/jsonip'
+        ];
+        
+        for (const service of services) {
+          try {
+            const res = await fetch(service);
+            const data = await res.json();
+            const ip = data.ip || data.ip_addr || data.query;
+            if (ip) {
+              setGatewayIP(ip);
+              return ip;
+            }
+          } catch (e) { continue; }
+        }
+      } catch (e) { }
+      return null;
+    };
+
+    // Initial fetch
+    fetchGatewayIP();
+
+    // Re-fetch on network online or visibility change (common when switching apps/networks)
+    const handleNetworkActivity = () => {
+      // console.log('[Network] Activity detected, refreshing Gateway IP...');
+      fetchGatewayIP();
+    };
+    window.addEventListener('online', handleNetworkActivity);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') fetchGatewayIP();
+    });
+
     const { deviceName, osName, isMobile } = getDeviceInfo();
     const finalName = displayName || `${osName} ${deviceName}`;
     
@@ -94,7 +182,8 @@ function App() {
       reconnectionDelay: 1000,
       reconnectionDelayMax: 5000,
       timeout: 15000,
-      forceNew: true
+      forceNew: true,
+      autoConnect: true
     });
 
     socketRef.current = newSocket;
@@ -108,57 +197,68 @@ function App() {
       setMe(newSocket.id);
       setIsConnected(true);
       // Join room or register with display name if available
-      if (displayName) {
-        newSocket.emit('join', {
-          name: displayName,
-          deviceType: getDeviceInfo().isMobile ? 'mobile' : 'desktop',
-          browser: getDeviceInfo().browser
-        });
-      }
+      newSocket.emit('join', {
+        name: finalName,
+        deviceType: getDeviceInfo().isMobile ? 'mobile' : 'desktop',
+        browser: getDeviceInfo().browser,
+        gatewayIP: gatewayIP
+      });
     });
 
     newSocket.on('users-list', (usersList) => {
-      console.log('Received users list:', usersList);
-      const updatedUsers = usersList.filter(u => u.id !== newSocket.id);
-      setUsers(updatedUsers);
+      // console.log('Received users list:', usersList);
+      
+      // Additional client-side deduplication by name (keep latest joinedAt)
+      const uniqueUsersMap = new Map();
+      usersList.forEach(user => {
+        if (user.id === newSocket.id) return; // Skip self
+        const existing = uniqueUsersMap.get(user.name);
+        if (!existing || user.joinedAt > existing.joinedAt) {
+          uniqueUsersMap.set(user.name, user);
+        }
+      });
+      
+      setUsers(Array.from(uniqueUsersMap.values()));
     });
 
     newSocket.on('signal', ({ from, signal, pin }) => {
-      console.log(`[Signal] Received from ${from}, type: ${signal?.type}`);
+      // console.log(`[Signal] Received from ${from}, type: ${signal?.type}`);
       
       // Handle Control Signals (Cancel, Error, Direct-IP, etc) via Signaling Fallback
       if (signal && signal.type === 'control') {
-        if (signal.action === 'cancel' || signal.action === 'force-refresh') {
-          const reason = signal.action === 'force-refresh' ? 'Koneksi lawan bermasalah' : 'Transfer dibatalkan';
+        if (signal.action === 'cancel' || signal.action === 'force-refresh' || signal.action === 'decline') {
+          const reason = signal.action === 'decline' ? 'Transfer ditolak oleh penerima' : 
+                         signal.action === 'force-refresh' ? 'Koneksi lawan bermasalah' : 'Transfer dibatalkan';
           toast.error(`${reason}. Memuat ulang...`);
           setTimeout(() => window.location.reload(), 2000);
         } else if (signal.action === 'direct-ip') {
-          console.log(`%c[Direct IP] Penerima berada di Gateway: ${signal.ip}`, 'color: #3b82f6; font-weight: bold');
+          // Silent gateway detection
+          // console.log(`%c[Direct IP] Penerima berada di Gateway: ${signal.ip}`, 'color: #3b82f6; font-weight: bold');
           // Jika terdeteksi IP berbeda (lintas gateway), langsung siapkan mode Relay untuk percobaan berikutnya
           if (transferStateRef.current === 'connecting') {
-             console.warn('[Direct IP] Lintas gateway terdeteksi, mengoptimalkan jalur relay...');
+             // console.warn('[Direct IP] Lintas gateway terdeteksi, mengoptimalkan jalur relay...');
           }
         }
         return;
       }
 
       if (signal.type === 'offer') {
-        console.log('[Signal] Processing incoming offer...');
+        // console.log('[Signal] Processing incoming offer...');
         setIncomingSignal({ from, signal, pin });
       } else if (peerRef.current) {
-        console.log('[Signal] Forwarding signal to peer...');
+        // console.log('[Signal] Forwarding signal to peer...');
         peerRef.current.signal(signal);
       }
     });
 
     newSocket.on('disconnect', () => {
-      console.warn('[Socket] Disconnected from signaling server');
+      // console.warn('[Socket] Disconnected from signaling server');
       setIsConnected(false);
     });
 
     // Handle signaling errors from server
     newSocket.on('signal-error', ({ code }) => {
-      console.error('[Signal Error]', code);
+      // console.error('[Signal Error]', code);
       if (code === 'RECIPIENT_OFFLINE') {
         toast.error('Penerima sedang offline. Mencoba ulang...');
         setTimeout(() => startTransfer(0), 2000);
@@ -171,24 +271,34 @@ function App() {
 
   // Update Name in Signaling
   useEffect(() => {
-    if (displayName) {
-      localStorage.setItem('userDisplayName', displayName);
+    if (isConnected && socket) {
+      if (displayName) localStorage.setItem('userDisplayName', displayName);
       
-      // Sinkronisasi ke server jika socket sudah aktif
-      if (socket && isConnected) {
-        socket.emit('join', {
-          name: displayName,
-          deviceType: getDeviceInfo().isMobile ? 'mobile' : 'desktop',
-          browser: getDeviceInfo().browser
-        });
-      }
+      socket.emit('join', {
+        name: displayName || `${getDeviceInfo().osName} ${getDeviceInfo().deviceName}`,
+        deviceType: getDeviceInfo().isMobile ? 'mobile' : 'desktop',
+        browser: getDeviceInfo().browser,
+        gatewayIP: gatewayIP
+      });
     }
-  }, [displayName, socket, isConnected]);
+  }, [displayName, gatewayIP, socket, isConnected]);
 
   // --- Effects ---
   useEffect(() => {
     localStorage.setItem('transferHistory', JSON.stringify(history.slice(0, 50)));
   }, [history]);
+
+  // Auto-update targetUser if device reconnects with same name
+  useEffect(() => {
+    if (targetUser) {
+      const updatedTarget = users.find(u => u.name === targetUser.name);
+      if (updatedTarget && updatedTarget.id !== targetUser.id) {
+        setTargetUser(updatedTarget);
+      } else if (!updatedTarget && transferState === 'idle') {
+        setTargetUser(null);
+      }
+    }
+  }, [users, targetUser, transferState]);
 
   // --- Handlers ---
   const handleFileSelect = (e) => {
@@ -260,12 +370,6 @@ function App() {
     isCancelledRef.current = false;
     setIsPaused(false);
     setProcessedSize(0);
-    
-    // Generate Encryption Key if Secure
-    if (isSecure) {
-      const salt = Math.random().toString(36).substring(7);
-      encryptionKeyRef.current = await generateKey('kirimfile-p2p', salt);
-    }
 
     // Force Relay (TURN) lebih cepat jika lintas jaringan masih gagal
     const currentConfig = { ...PEER_CONFIG };
@@ -286,7 +390,7 @@ function App() {
     peer.on('signal', (signal) => {
       if (signal.candidate) {
         const mode = detectConnectionType(signal.candidate.candidate);
-        console.log(`[ICE Candidate] Found: ${mode}`);
+        // console.log(`[ICE Candidate] Found: ${mode}`);
         setConnectionMode(mode);
       }
       emitSignal(socket, targetUser.id, me, signal, { pin: roomPin });
@@ -297,15 +401,15 @@ function App() {
     if (peer._pc) {
       peer._pc.oniceconnectionstatechange = () => {
         const state = peer._pc.iceConnectionState;
-        console.log(`[ICE State] ${state}`);
+        // console.log(`[ICE State] ${state}`);
         
         if (state === 'failed' || state === 'disconnected') {
-          console.warn('[ICE] Koneksi terhambat, menyiapkan negosiasi ulang...');
+          // console.warn('[ICE] Koneksi terhambat, menyiapkan negosiasi ulang...');
           if (renegotiateTimeout) clearTimeout(renegotiateTimeout);
           // Give it a 2s window to recover before forcing renegotiation
           renegotiateTimeout = setTimeout(() => {
             if (peer._pc && (peer._pc.iceConnectionState === 'failed' || peer._pc.iceConnectionState === 'disconnected')) {
-              console.log('[ICE] Menjalankan renegotiate...');
+              // console.log('[ICE] Menjalankan renegotiate...');
               peer.renegotiate();
             }
           }, 2000);
@@ -315,14 +419,14 @@ function App() {
 
     peer.on('connect', async () => {
       const handshakeDuration = Date.now() - startTime;
-      console.log(`[Handshake] Berhasil dalam ${handshakeDuration}ms (Reverse Mode)`);
+      // console.log(`[Handshake] Berhasil dalam ${handshakeDuration}ms`);
       if (handshakeDuration < 500) {
-        console.log('%c[Handshake] Ultra Cepat (<500ms)', 'color: #10b981; font-weight: bold');
+        // console.log('%c[Handshake] Ultra Cepat (<500ms)', 'color: #10b981; font-weight: bold');
       }
 
       setTransferState('transferring');
       transferStateRef.current = 'transferring';
-      peer.send(JSON.stringify({ type: 'batch-start', count: fileList.length, isSecure }));
+      sendPeerJSON(peer, { type: 'batch-start', count: fileList.length });
 
       try {
         for (let i = 0; i < fileList.length; i++) {
@@ -338,7 +442,7 @@ function App() {
             hash
           };
           setCurrentFileMetadata(metadata);
-          peer.send(JSON.stringify({ type: 'metadata', ...metadata }));
+          sendPeerJSON(peer, { type: 'metadata', ...metadata });
 
           await new Promise((resolve, reject) => {
             const reader = new FileReader();
@@ -349,13 +453,13 @@ function App() {
             const isCompressed = false; 
 
             let offset = 0;
-              let chunkSize = 131072; // Start with 128KB for high speed
+              let chunkSize = MIN_CHUNK_SIZE;
               let lastProgressUpdate = 0;
 
               const sendChunk = async () => {
                 try {
                   // Pipeline multiple chunks for higher throughput
-                  const pipelineSize = 4; 
+                  const pipelineSize = 2; 
                   
                   while (offset < buffer.byteLength) {
                     if (isCancelledRef.current || peer.destroyed) {
@@ -379,16 +483,7 @@ function App() {
                       const currentChunk = buffer.slice(offset, offset + chunkSize);
                       let dataToSend = currentChunk;
 
-                      if (isSecure && encryptionKeyRef.current) {
-                        const iv = window.crypto.getRandomValues(new Uint8Array(12));
-                        const encrypted = await encryptChunk(encryptionKeyRef.current, currentChunk, iv);
-                        const combined = new Uint8Array(iv.length + encrypted.byteLength);
-                        combined.set(iv);
-                        combined.set(new Uint8Array(encrypted), iv.length);
-                        dataToSend = combined;
-                      }
-
-                      peer.send(dataToSend);
+                      sendPeerBinary(peer, dataToSend);
                       offset += currentChunk.byteLength;
                       updateSpeed(currentChunk.byteLength);
                     }
@@ -409,21 +504,17 @@ function App() {
                       lastEtaValueRef.current = etaResult.seconds;
                       setEta(etaResult.text);
                       
-                      peer.send(JSON.stringify({ 
+                      sendPeerJSON(peer, { 
                         type: 'progress', 
                         progress: currentProgress, 
                         processed: offset
-                      }));
+                      });
                       lastProgressUpdate = Date.now();
                     }
 
                     if (offset >= buffer.byteLength) {
-                      peer.send(JSON.stringify({ type: 'control', action: 'eof', hash }));
-                    }
-
-                    // Faster chunk growth
-                    if (peer.bufferSize < BUFFER_THRESHOLD / 2) {
-                      chunkSize = Math.min(MAX_CHUNK_SIZE, chunkSize + 16384);
+                      // Gunakan metadata hash yang dihitung sebelum pengiriman
+                      sendPeerJSON(peer, { type: 'control', action: 'eof', hash: hash });
                     }
                     
                     // Yield to UI thread occasionally
@@ -452,7 +543,13 @@ function App() {
       if (!isCancelledRef.current) {
         setTransferState('completed');
         transferStateRef.current = 'completed';
-        toast.success('Semua file berhasil dikirim! Halaman akan dimuat ulang...');
+        
+        // Notify receiver that sender is finished
+        sendPeerJSON(peerRef.current, { type: 'control', action: 'sender-finished' });
+
+        // Sender: Wait for receiver to finish downloading
+        toast.loading('Menunggu penerima selesai mendownload...', { id: 'sync-toast' });
+        
         setHistory(prev => [{
           id: Date.now(),
           type: 'sent',
@@ -462,11 +559,6 @@ function App() {
           time: new Date().toLocaleTimeString()
         }, ...prev]);
         setFileList([]);
-
-        // Auto refresh for sender after completion
-        setTimeout(() => {
-          window.location.reload();
-        }, 3000);
       }
     });
 
@@ -478,6 +570,10 @@ function App() {
           if (msg.action === 'pause') { isPausedRef.current = true; setIsPaused(true); }
           if (msg.action === 'resume') { isPausedRef.current = false; setIsPaused(false); }
           if (msg.action === 'cancel') { handleCancelTransfer(false); }
+          if (msg.action === 'receiver-finished') {
+            toast.success('Penerima selesai mendownload! Memuat ulang...', { id: 'sync-toast' });
+            setTimeout(() => window.location.reload(), 3000);
+          }
         }
       }
     });
@@ -537,17 +633,15 @@ function App() {
     const newState = !isPaused;
     setIsPaused(newState);
     isPausedRef.current = newState;
-    if (peerRef.current) {
-      peerRef.current.send(JSON.stringify({ type: 'control', action: newState ? 'pause' : 'resume' }));
-    }
+    sendPeerJSON(peerRef.current, { type: 'control', action: newState ? 'pause' : 'resume' });
   };
 
   const handleCancelTransfer = (notifyPeer = true) => {
     isCancelledRef.current = true;
     
     // 1. Notify via Data Channel (Fastest)
-    if (notifyPeer && peerRef.current) {
-      try { peerRef.current.send(JSON.stringify({ type: 'control', action: 'cancel' })); } catch(e) {}
+    if (notifyPeer) {
+      sendPeerJSON(peerRef.current, { type: 'control', action: 'cancel' });
     }
     
     // 2. Notify via Signaling (Reliable Fallback)
@@ -571,6 +665,20 @@ function App() {
     }, 1500);
   };
 
+  const declineTransfer = () => {
+    if (incomingSignal) {
+      const { from } = incomingSignal;
+      socket.emit('signal', { 
+        to: from, 
+        from: me, 
+        signal: { type: 'control', action: 'decline' } 
+      });
+      setIncomingSignal(null);
+      toast.error('Transfer ditolak. Memuat ulang...');
+      setTimeout(() => window.location.reload(), 1500);
+    }
+  };
+
   const acceptTransfer = () => {
     if (incomingSignal.pin && verifyPin !== incomingSignal.pin) {
       setPinError(true);
@@ -578,9 +686,9 @@ function App() {
       return;
     }
 
-    console.log('[Accept] Memulai reverse handshake - Receiver sebagai initiator...');
-    setTransferState('connecting');
-    transferStateRef.current = 'connecting';
+    // console.log('[Accept] Starting transfer accept process...');
+    setTransferState('transferring');
+    transferStateRef.current = 'transferring';
     setTransferType('receiving');
     transferTypeRef.current = 'receiving';
     const { from, signal } = incomingSignal;
@@ -588,9 +696,8 @@ function App() {
     setVerifyPin('');
     setPinError(false);
 
-    // Receiver sebagai Initiator - pendekatan reverse handshake untuk menembus NAT
     const peer = new Peer({
-      initiator: true, // REVERSED: Receiver yang memulai koneksi!
+      initiator: false,
       trickle: true,
       config: PEER_CONFIG,
       allowHalfTrickle: true
@@ -603,16 +710,28 @@ function App() {
     setProcessedSize(0);
 
     peer.on('signal', (sig) => {
-      console.log(`[Reverse Signal] type: ${sig?.type}`);
-      if (sig.type === 'offer') {
-        console.log('[Reverse] Sending offer to initiator (sender)...');
-      }
+      // console.log(`[Accept Signal] type: ${sig?.type}`);
       if (sig.candidate) {
         const mode = detectConnectionType(sig.candidate.candidate);
-        console.log(`[Reverse ICE Candidate] Found: ${mode}`);
+        // console.log(`[Accept ICE Candidate] Found: ${mode}`);
         setConnectionMode(mode);
+        
+        // Share IP Gateway/Lokal secara eksplisit untuk mempercepat handshake
+        if (sig.candidate.candidate.includes('typ host')) {
+          const ipMatch = sig.candidate.candidate.match(/([0-9]{1,3}(\.[0-9]{1,3}){3})/);
+          if (ipMatch) {
+            // console.log(`[Direct IP] Sharing Gateway/Local IP: ${ipMatch[1]}`);
+            socket.emit('signal', { 
+              to: from, 
+              from: me, 
+              signal: { type: 'control', action: 'direct-ip', ip: ipMatch[1] } 
+            });
+          }
+        }
       }
-      // Kirim sinyal balik langsung ke pengirim
+      
+      // Cegah pengiriman sinyal ganda saat background
+      if (peer.destroyed || isCancelledRef.current) return;
       emitSignal(socket, from, me, sig);
     });
 
@@ -621,13 +740,13 @@ function App() {
     if (peer._pc) {
       peer._pc.oniceconnectionstatechange = () => {
         const state = peer._pc.iceConnectionState;
-        console.log(`[Receiver ICE State] ${state}`);
+        // console.log(`[Receiver ICE State] ${state}`);
         if (state === 'failed' || state === 'disconnected') {
-           console.warn('[Receiver ICE] Koneksi terhambat, menyiapkan negosiasi ulang...');
+           // console.warn('[Receiver ICE] Koneksi terhambat, menyiapkan negosiasi ulang...');
            if (receiverRenegotiateTimeout) clearTimeout(receiverRenegotiateTimeout);
            receiverRenegotiateTimeout = setTimeout(() => {
              if (peer._pc && (peer._pc.iceConnectionState === 'failed' || peer._pc.iceConnectionState === 'disconnected')) {
-               console.log('[Receiver ICE] Menjalankan renegotiate...');
+               // console.log('[Receiver ICE] Menjalankan renegotiate...');
                peer.renegotiate();
              }
            }, 2000);
@@ -647,10 +766,16 @@ function App() {
     let lastUIUpdateTime = 0; // Throttling UI updates for binary data
 
     peer.on('data', async (data) => {
-      const parsed = parseMessage(data);
+      // Segera salin data ke buffer baru (Uint8Array) untuk integritas memori
+      const rawData = new Uint8Array(data);
+      const parsed = parseMessage(rawData);
 
       if (parsed.type === 'json') {
         const message = parsed.message;
+        
+        // --- LOGGING KOMPREHENSIF: JSON SIGNAL ---
+        // console.log(`[Signal Received] Type: ${message.type}${message.action ? ', Action: ' + message.action : ''}`);
+
         if (message.type === 'batch-start') { 
           totalFiles = message.count; 
           return; 
@@ -662,9 +787,8 @@ function App() {
           receivedSize = 0;
           setProgress(0);
           setProcessedSize(0);
-          setEta('--:--'); // Reset ETA to default
+          setEta('--:--');
           isCompressed = false;
-          // Reset speed calculation for new file
           speedRef.current = { bytes: 0, lastTime: Date.now(), window: [], currentSpeed: 0 };
           return;
         }
@@ -679,37 +803,32 @@ function App() {
             setIsPaused(false);
           } else if (message.action === 'cancel') {
             handleCancelTransfer(false);
+          } else if (message.action === 'sender-finished') {
+            toast.success('Pengirim selesai mengupload! Memuat ulang...', { id: 'sync-toast-receiver' });
+            setTimeout(() => window.location.reload(), 3000);
           } else if (message.action === 'eof') {
-            console.log('EOF received for:', metadata?.name);
+            // Verifikasi integritas hash yang dikirim oleh pengirim
+            if (message.hash) {
+              // Simpan hash untuk divalidasi nanti di processReceivedFile
+              metadata.expectedHash = message.hash;
+            }
             processReceivedFile();
           }
           return;
         }
         if (message.type === 'progress') {
           lastProgressTime = Date.now();
-          // Decoupled: Receiver only takes progress/processed as reference
-          // but calculates its own speed and ETA locally for better accuracy
           if (transferTypeRef.current === 'receiving') {
             setProgress(message.progress);
             setProcessedSize(message.processed);
             
-            // CRITICAL FIX: Jangan biarkan pesan progress tanpa ETA dari pengirim
-            // meng-overwrite state ETA lokal penerima. 
-            // Kita hitung ulang ETA di sini menggunakan kecepatan lokal.
             const currentSpeed = speedRef.current.currentSpeed;
             if (currentSpeed > 0 && metadata) {
               const etaResult = calculateETA(metadata.size, message.processed, currentSpeed);
-              if (etaResult.text !== '--:--') {
-                // Notifikasi log jika estimasi berubah signifikan di sisi penerima
-                if (Math.abs(etaResult.seconds - lastEtaValueRef.current) > 15 && lastEtaValueRef.current !== 0) {
-                   console.warn(`[Network] Kondisi jaringan berubah, ETA diperbarui: ${etaResult.text}`);
-                }
-                lastEtaValueRef.current = etaResult.seconds;
-                setEta(etaResult.text);
-              }
+              lastEtaValueRef.current = etaResult.seconds;
+              setEta(etaResult.text);
             }
           } else {
-            // Sender updates from receiver's feedback if any (though currently one-way)
             setProgress(message.progress);
             setProcessedSize(message.processed);
           }
@@ -718,30 +837,20 @@ function App() {
       }
 
       // Handle Binary Data (Chunk)
-      let chunkData = data;
-      if (isSecure && encryptionKeyRef.current) {
-        try {
-          const iv = data.slice(0, 12);
-          const encrypted = data.slice(12);
-          chunkData = await decryptChunk(encryptionKeyRef.current, encrypted, iv);
-        } catch (e) {
-          console.error('Decryption failed', e);
-        }
-      }
+      // Gunakan data dari parsed (yang sudah dipotong header byte-nya)
+      let chunkData = new Uint8Array(parsed.data);
 
+      // CRITICAL: Push data yang sudah dipastikan Uint8Array
       receivedChunks.push(chunkData);
-      const chunkSize = chunkData.byteLength || chunkData.length;
+      const chunkSize = chunkData.byteLength;
       receivedSize += chunkSize;
       
-      // Hitung kecepatan lokal secara real-time dari data biner yang masuk
       const currentLocalSpeed = updateSpeed(chunkSize);
       
       if (metadata) {
         const currentProgress = (receivedSize / metadata.size) * 100;
-        // Receiver relies on local binary flow for speed and ETA
         if (transferTypeRef.current === 'receiving') {
           const now = Date.now();
-          // Throttle UI updates (100ms) but ensure ETA is updated immediately at start
           if (now - lastUIUpdateTime > 100 || receivedSize >= metadata.size || receivedSize <= chunkSize * 5) {
             setProgress(currentProgress);
             setProcessedSize(receivedSize);
@@ -762,8 +871,8 @@ function App() {
       const fileMetadata = metadata;
       if (!fileMetadata || receivedChunks.length === 0) return;
 
-      console.log('Processing received file:', fileMetadata.name);
-      let finalBuffer = receivedChunks;
+      // console.log('Processing received file:', fileMetadata.name);
+      let processedChunks = receivedChunks;
       if (isCompressed) {
         const combined = new Uint8Array(receivedSize);
         let offset = 0;
@@ -771,38 +880,62 @@ function App() {
           combined.set(new Uint8Array(c), offset);
           offset += c.byteLength;
         });
-        finalBuffer = [decompressData(combined.buffer)];
+        processedChunks = [decompressData(combined.buffer)];
       }
 
-      const blob = new Blob(finalBuffer, { type: fileMetadata.mime });
+      // Verifikasi Integritas File (Hash Check)
+      const blob = new Blob(processedChunks, { type: fileMetadata.mime });
+      
+      // Memberikan jeda sedikit agar memori tenang sebelum kalkulasi hash
+      await new Promise(r => setTimeout(r, 300)); // Tambah jeda sedikit untuk kestabilan
+      const currentHash = await calculateHash(blob);
+      
+      const expectedHash = fileMetadata.expectedHash || fileMetadata.hash;
+      
+      if (expectedHash && currentHash !== expectedHash) {
+        console.error(`[Integrity Error] Hash mismatch for ${fileMetadata.name}`);
+        console.error(`Expected: ${expectedHash}`);
+        console.error(`Actual:   ${currentHash}`);
+        
+        toast.error(`File ${fileMetadata.name} korup saat pengiriman. Silakan coba lagi.`);
+        // Reset and return without downloading
+        metadata = null;
+        receivedChunks = [];
+        receivedSize = 0;
+        return;
+      }
+
       const url = URL.createObjectURL(blob);
       
       const fileName = fileMetadata.name;
       const fileSize = fileMetadata.size;
+
+      // Langsung download file yang baru saja selesai
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = fileName;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
 
       // Update received files state safely
       setReceivedFiles(prev => {
         const newFiles = [...prev, { name: fileName, url, size: fileSize }];
         
         currentFilesCount++;
-        console.log(`[Transfer] File selesai diproses (${currentFilesCount}/${totalFiles}): ${fileName}`);
+        // console.log(`[Transfer] File selesai diproses (${currentFilesCount}/${totalFiles}): ${fileName}`);
 
         if (currentFilesCount >= totalFiles) {
           setTransferState('completed');
           transferStateRef.current = 'completed';
-          toast.success('Berhasil menerima semua file! Halaman akan dimuat ulang...');
           
-          newFiles.forEach(file => {
-            const a = document.createElement('a');
-            a.href = file.url;
-            a.download = file.name;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-          });
+          // Receiver: Notify sender and wait
+          sendPeerJSON(peerRef.current, { type: 'control', action: 'receiver-finished' });
 
+          toast.success('Berhasil menerima semua file! Menunggu pengirim...', { id: 'sync-toast-receiver' });
+          
           // Validasi Integritas Akhir (Log Hash)
-          console.log(`[Integrity] Semua file batch selesai. Total Size: ${formatSize(receivedSize)}`);
+          // console.log(`[Integrity] Semua file batch selesai. Total Size: ${formatSize(receivedSize)}`);
 
           setHistory(hPrev => [{
             id: Date.now(),
@@ -908,157 +1041,57 @@ function App() {
               <div className="flex items-center gap-2 text-[10px] font-medium uppercase tracking-wider">
                 <span className={`flex h-1.5 w-1.5 rounded-full ${isConnected ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} />
                 <span className={isConnected ? 'text-green-400' : 'text-red-400'}>
-                  {isConnected ? `${connectionMode}` : 'CONNECTING...'}
+                  {isConnected ? 'Online' : 'Offline'}
                 </span>
               </div>
             </div>
           </div>
 
-          <div className="hidden md:flex items-center gap-6">
-            <nav className="flex items-center gap-1 p-1 bg-white/5 rounded-xl border border-white/10">
-              <button 
-                onClick={() => setActiveTab('transfer')}
-                className={`px-4 py-2 text-sm font-medium rounded-lg shadow-sm transition-all ${activeTab === 'transfer' ? 'bg-blue-500 text-white' : 'text-slate-400 hover:text-white'}`}
-              >
-                Transfer
-              </button>
-              <button 
-                onClick={() => setActiveTab('history')}
-                className={`px-4 py-2 text-sm font-medium rounded-lg shadow-sm transition-all ${activeTab === 'history' ? 'bg-blue-500 text-white' : 'text-slate-400 hover:text-white'}`}
-              >
-                History
-              </button>
-            </nav>
-            <div className="h-8 w-[1px] bg-white/10" />
-            <div className="flex items-center gap-3">
-              <div className="text-right">
-                <div className="flex items-center gap-2 group">
-                  {isEditingName ? (
-                    <div className="flex items-center gap-2">
-                      <input 
-                        autoFocus
-                        type="text"
-                        value={tempName}
-                        onChange={(e) => setTempName(e.target.value)}
-                        onKeyDown={(e) => e.key === 'Enter' && handleSaveName()}
-                        className="bg-black/40 border border-blue-500/50 rounded-md px-2 py-0.5 text-xs text-white outline-none w-24"
-                      />
-                      <button onClick={handleSaveName} className="text-blue-500 hover:text-blue-400">
-                        <CheckCircle size={14} />
-                      </button>
+          <div className="flex items-center gap-3">
+            <div className="text-right">
+              <div className="flex items-center gap-2 group">
+                {isEditingName ? (
+                  <div className="flex items-center gap-2">
+                    <input 
+                      autoFocus
+                      type="text"
+                      value={tempName}
+                      onChange={(e) => setTempName(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && handleSaveName()}
+                      className="bg-black/40 border border-blue-500/50 rounded-md px-2 py-0.5 text-xs text-white outline-none w-24"
+                    />
+                    <button onClick={handleSaveName} className="text-blue-500 hover:text-blue-400">
+                      <CheckCircle size={14} />
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    <div className="flex flex-col items-end">
+                      <p className="text-xs font-semibold text-white">
+                        <span className="hidden md:inline">Nama Perangkat : </span>
+                        {displayName || 'Tanpa Nama'}
+                      </p>
                     </div>
-                  ) : (
-                    <>
-                      <div className="flex flex-col items-end">
-                        <p className="text-xs font-semibold text-white">{displayName || 'Anonymous'}</p>
-                      </div>
-                      <button 
-                        onClick={() => {setIsEditingName(true); setTempName(displayName);}}
-                        className="text-slate-500 hover:text-blue-400 transition-colors opacity-0 group-hover:opacity-100"
-                      >
-                        <Edit2 size={12} />
-                      </button>
-                    </>
-                  )}
-                </div>
+                    <button 
+                      onClick={() => {setIsEditingName(true); setTempName(displayName);}}
+                      className="text-slate-500 hover:text-blue-400 transition-colors opacity-0 group-hover:opacity-100"
+                    >
+                      <Edit2 size={12} />
+                    </button>
+                  </>
+                )}
               </div>
             </div>
           </div>
-          
-          <button 
-            onClick={() => setIsMobileMenuOpen(true)}
-            className="md:hidden p-2 text-slate-400 hover:text-white transition-colors"
-          >
-            <Menu size={24} />
-          </button>
         </header>
 
-        {/* Mobile Sidebar */}
-        <AnimatePresence>
-          {isMobileMenuOpen && (
-            <>
-              <motion.div 
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                onClick={() => setIsMobileMenuOpen(false)}
-                className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[150] md:hidden"
-              />
-              <motion.div 
-                initial={{ x: '100%' }}
-                animate={{ x: 0 }}
-                exit={{ x: '100%' }}
-                transition={{ type: 'spring', damping: 25, stiffness: 200 }}
-                className="fixed top-0 right-0 bottom-0 w-[280px] bg-[#0d1117] border-l border-white/10 z-[151] md:hidden p-6 shadow-2xl"
-              >
-                <div className="flex items-center justify-between mb-8">
-                  <h2 className="text-xl font-bold text-white">Menu</h2>
-                  <button onClick={() => setIsMobileMenuOpen(false)} className="p-2 text-slate-400">
-                    <X size={24} />
-                  </button>
-                </div>
-                
-                <div className="space-y-4">
-                  <button 
-                    onClick={() => { setActiveTab('transfer'); setIsMobileMenuOpen(false); }}
-                    className={`w-full flex items-center gap-4 p-4 rounded-2xl font-bold transition-all ${activeTab === 'transfer' ? 'bg-blue-600 text-white' : 'bg-white/5 text-slate-400'}`}
-                  >
-                    <Share2 size={20} /> Transfer
-                  </button>
-                  <button 
-                    onClick={() => { setActiveTab('history'); setIsMobileMenuOpen(false); }}
-                    className={`w-full flex items-center gap-4 p-4 rounded-2xl font-bold transition-all ${activeTab === 'history' ? 'bg-blue-600 text-white' : 'bg-white/5 text-slate-400'}`}
-                  >
-                    <History size={20} /> History
-                  </button>
-                </div>
-
-                <div className="absolute bottom-8 left-6 right-6">
-                  <div className="p-4 bg-white/5 rounded-2xl border border-white/10">
-                    <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2">My Device</p>
-                    <div className="flex items-center justify-between group">
-                      {isEditingName ? (
-                        <div className="flex items-center gap-1 w-full">
-                          <input 
-                            autoFocus
-                            type="text"
-                            value={tempName}
-                            onChange={(e) => setTempName(e.target.value)}
-                            onKeyDown={(e) => e.key === 'Enter' && handleSaveName()}
-                            className="bg-black/40 border border-blue-500/50 rounded-md px-2 py-1 text-sm text-white outline-none flex-1"
-                          />
-                          <button onClick={handleSaveName} className="text-blue-500">
-                            <CheckCircle size={18} />
-                          </button>
-                        </div>
-                      ) : (
-                        <>
-                          <p className="text-sm font-bold text-white truncate flex-1">{displayName || 'Anonymous'}</p>
-                          <button 
-                            onClick={() => {setIsEditingName(true); setTempName(displayName);}}
-                            className="text-slate-500 hover:text-blue-400 p-1"
-                          >
-                            <Edit2 size={14} />
-                          </button>
-                        </>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              </motion.div>
-            </>
-          )}
-        </AnimatePresence>
-
         <main className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-          {activeTab === 'transfer' && (
-            <>
               {/* Left Column: Device Discovery & Controls */}
               <div className="lg:col-span-4 space-y-6">
                 <div className="bg-white/5 border border-white/10 rounded-3xl p-6 backdrop-blur-xl">
                   <div className="flex items-center justify-between mb-6">
                     <h2 className="text-sm font-bold text-white flex items-center gap-2">
-                      <Globe size={18} className="text-blue-500" /> Nearby Devices
+                      <Globe size={18} className="text-blue-500" /> Perangkat Terhubung
                     </h2>
                   </div>
 
@@ -1068,8 +1101,8 @@ function App() {
                         <div className="w-16 h-16 bg-blue-500/10 rounded-full flex items-center justify-center mb-4 animate-pulse">
                           <Search size={24} className="text-blue-500/50" />
                         </div>
-                        <p className="text-sm text-slate-400 font-medium">Scanning for devices...</p>
-                        <p className="text-[11px] text-slate-600 mt-1 px-10">Make sure others have Kirim File open on the same network or internet.</p>
+                        <p className="text-sm text-slate-400 font-medium">Memindai perangkat...</p>
+                        <p className="text-[11px] text-slate-600 mt-1 px-10">Pastikan perangkat lain membuka Kirim File di jaringan yang sama atau internet.</p>
                       </div>
                     ) : (
                       users.map((user) => (
@@ -1098,7 +1131,14 @@ function App() {
                                 <span className={`text-[9px] font-bold uppercase px-1.5 py-0.5 rounded-md ${
                                   targetUser?.id === user.id ? 'bg-white/20 text-white' : 'bg-slate-700/50 text-slate-400'
                                 }`}>
-                                  {user.deviceType}
+                                  {user.deviceType === 'mobile' ? 'Mobile' : 'Desktop'}
+                                </span>
+                                <span className={`text-[9px] font-bold uppercase px-1.5 py-0.5 rounded-md animate-pulse ${
+                                  user.isLocal 
+                                    ? (targetUser?.id === user.id ? 'bg-white/30 text-white' : 'bg-green-500/20 text-green-400')
+                                    : (targetUser?.id === user.id ? 'bg-white/30 text-white' : 'bg-green-500/20 text-green-400')
+                                }`}>
+                                  Online
                                 </span>
                               </div>
                             </div>
@@ -1111,52 +1151,6 @@ function App() {
                         </motion.div>
                       ))
                     )}
-                  </div>
-                </div>
-
-                {/* Quick Settings */}
-                <div className="bg-white/5 border border-white/10 rounded-3xl p-6 backdrop-blur-xl">
-                  <h2 className="text-sm font-bold text-white mb-4 flex items-center gap-2">
-                    <Settings size={18} className="text-slate-400" /> Transfer Settings
-                  </h2>
-                  <div className="space-y-4">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-3">
-                        <div className="p-2 bg-green-500/10 rounded-lg">
-                          <ShieldCheck size={18} className="text-green-500" />
-                        </div>
-                        <div>
-                          <p className="text-xs font-bold text-white">E2E Encryption</p>
-                          <p className="text-[10px] text-slate-500">AES-256 GCM Secure</p>
-                        </div>
-                      </div>
-                      <button 
-                        onClick={() => setIsSecure(!isSecure)}
-                        className={`w-10 h-5 rounded-full transition-colors relative ${isSecure ? 'bg-blue-500' : 'bg-slate-700'}`}
-                      >
-                        <div className={`absolute top-1 w-3 h-3 bg-white rounded-full transition-all ${isSecure ? 'right-1' : 'left-1'}`} />
-                      </button>
-                    </div>
-                    
-                    <div className="pt-4 border-t border-white/5">
-                      <div className="flex items-center gap-3 mb-3">
-                        <div className="p-2 bg-blue-500/10 rounded-lg">
-                          <Lock size={18} className="text-blue-500" />
-                        </div>
-                        <div>
-                          <p className="text-xs font-bold text-white">Secure Room PIN</p>
-                          <p className="text-[10px] text-slate-500">Only connect via PIN</p>
-                        </div>
-                      </div>
-                      <input 
-                        type="text" 
-                        placeholder="Enter 4-digit PIN (Optional)" 
-                        maxLength={4}
-                        value={roomPin}
-                        onChange={(e) => setRoomPin(e.target.value)}
-                        className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white placeholder:text-slate-600 focus:outline-none focus:border-blue-500/50 transition-colors"
-                      />
-                    </div>
                   </div>
                 </div>
               </div>
@@ -1174,7 +1168,7 @@ function App() {
                     onDragOver={handleDragOver}
                     onDragLeave={handleDragLeave}
                     onDrop={handleDrop}
-                    className={`group/drop relative border-2 border-dashed rounded-3xl p-10 flex flex-col items-center justify-center transition-all duration-500 cursor-pointer h-72 ${
+                    className={`group/drop relative border-2 border-dashed rounded-3xl p-10 flex flex-col items-center justify-center transition-all duration-500 cursor-pointer h-[400px] ${
                       isDragging 
                         ? 'border-blue-500 bg-blue-500/10 scale-[1.02]' 
                         : 'border-white/10 bg-white/[0.02] hover:bg-white/[0.04] hover:border-blue-500/50'
@@ -1185,30 +1179,51 @@ function App() {
                       <FileUp size={40} className={isDragging ? 'text-white' : 'text-blue-500'} />
                     </div>
                     <h3 className="text-lg font-bold text-white mb-2">
-                      {isDragging ? 'Lepaskan untuk Upload' : 'Drop files here or click'}
+                      {isDragging ? 'Lepaskan untuk Upload' : (getDeviceInfo().isMobile ? 'Klik And Browse' : 'Drop Or Click')}
                     </h3>
-                    <p className="text-sm text-slate-500 max-w-[240px] text-center">Select files or folders to transfer instantly via P2P.</p>
+                    <p className="text-sm text-slate-500 max-w-[240px] text-center">Kirim File Anda Via P2P.</p>
                   </div>
                 </div>
 
-                    <div className="w-full md:w-80 flex flex-col justify-between h-72">
+                    <div className="w-full md:w-80 flex flex-col justify-between h-[400px]">
                       <div className="bg-black/20 rounded-2xl p-5 border border-white/5">
-                        <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-4">Transfer Summary</h3>
+                        <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-4">Ringkasan Pengiriman File</h3>
                         <div className="space-y-3">
                           <div className="flex justify-between items-center">
-                            <span className="text-xs text-slate-500">Selected Files</span>
-                            <span className="text-sm font-bold text-white">{fileList.length} Items</span>
+                            <span className="text-xs text-slate-500">File Terpilih</span>
+                            <span className="text-sm font-bold text-white">{fileList.length} Item</span>
                           </div>
                           <div className="flex justify-between items-center">
-                            <span className="text-xs text-slate-500">Total Volume</span>
+                            <span className="text-xs text-slate-500">Total Ukuran</span>
                             <span className="text-sm font-bold text-white">{formatSize(fileList.reduce((acc, f) => acc + f.size, 0))}</span>
                           </div>
                           <div className="flex justify-between items-center">
-                            <span className="text-xs text-slate-500">Recipient</span>
+                            <span className="text-xs text-slate-500">Penerima</span>
                             <span className={`text-sm font-bold ${targetUser ? 'text-blue-400' : 'text-slate-600 italic'}`}>
-                              {targetUser ? targetUser.name : 'Select Device'}
+                              {targetUser ? targetUser.name : 'Pilih Perangkat'}
                             </span>
                           </div>
+                        </div>
+
+                        {/* Secure Room PIN */}
+                        <div className="mt-6 pt-4 border-t border-white/5">
+                          <div className="flex items-center gap-3 mb-3">
+                            <div className="p-2 bg-blue-500/10 rounded-lg">
+                              <Lock size={16} className="text-blue-500" />
+                            </div>
+                            <div>
+                              <p className="text-[11px] font-bold text-white leading-none">PIN Ruang Aman</p>
+                              <p className="text-[9px] text-slate-500 mt-1">Hanya terhubung via PIN</p>
+                            </div>
+                          </div>
+                          <input 
+                            type="text" 
+                            placeholder="Masukkan 4 digit PIN (Opsional)" 
+                            maxLength={4}
+                            value={roomPin}
+                            onChange={(e) => setRoomPin(e.target.value)}
+                            className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-2 text-sm text-white placeholder:text-slate-600 focus:outline-none focus:border-blue-500/50 transition-colors"
+                          />
                         </div>
                       </div>
 
@@ -1224,7 +1239,7 @@ function App() {
                         <div className="absolute inset-0 bg-gradient-to-r from-white/0 via-white/10 to-white/0 -translate-x-full group-hover:animate-[shimmer_2s_infinite]" />
                         <div className="relative flex items-center justify-center gap-3">
                           {transferState === 'connecting' ? <Loader2 className="animate-spin" /> : <Share2 size={20} />}
-                          {transferState === 'connecting' ? 'Establishing P2P...' : 'Send Files Now'}
+                          {transferState === 'connecting' ? 'Membangun Koneksi P2P...' : 'Kirim File Sekarang'}
                         </div>
                       </button>
                     </div>
@@ -1240,13 +1255,13 @@ function App() {
                   >
                     <div className="px-6 py-4 border-b border-white/5 bg-white/[0.02] flex justify-between items-center">
                       <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                        <Files size={16} className="text-slate-400" /> Pending Queue
+                        <Files size={16} className="text-slate-400" /> Antrean Tertunda
                       </h3>
                       <button 
                         onClick={() => setFileList([])}
                         className="text-[10px] font-bold text-red-500/80 hover:text-red-500 uppercase tracking-wider flex items-center gap-1.5 transition-colors"
                       >
-                        <Trash2 size={12} /> Clear All
+                        <Trash2 size={12} /> Hapus Semua
                       </button>
                     </div>
                     <div className="max-h-60 overflow-y-auto custom-scrollbar">
@@ -1277,69 +1292,66 @@ function App() {
                   </motion.div>
                 )}
               </div>
-            </>
-          )}
 
-          {activeTab === 'history' && (
-            <div className="lg:col-span-12">
-              <div className="bg-white/5 border border-white/10 rounded-[32px] p-8 backdrop-blur-xl">
-                <div className="flex items-center justify-between mb-8">
-                  <div>
-                    <h2 className="text-2xl font-black text-white">Activity History</h2>
-                    <p className="text-sm text-slate-500">Track your recent P2P file transfers</p>
-                  </div>
-                  <button 
-                    onClick={() => setHistory([])}
-                    className="px-4 py-2 bg-red-500/10 text-red-500 rounded-xl text-xs font-bold hover:bg-red-500/20 transition-all"
-                  >
-                    Clear History
-                  </button>
+          {/* Activity History Section at the Bottom */}
+          <div className="lg:col-span-12 mt-12">
+            <div className="bg-white/5 border border-white/10 rounded-[32px] p-8 backdrop-blur-xl">
+              <div className="flex items-center justify-between mb-8">
+                <div>
+                  <h2 className="text-2xl font-black text-white">Riwayat Aktivitas</h2>
+                  <p className="text-sm text-slate-500">Pantau pengiriman file P2P terakhir Anda</p>
                 </div>
+                <button 
+                  onClick={() => setHistory([])}
+                  className="px-4 py-2 bg-red-500/10 text-red-500 rounded-xl text-xs font-bold hover:bg-red-500/20 transition-all"
+                >
+                  Hapus Riwayat
+                </button>
+              </div>
 
-                <div className="grid grid-cols-1 gap-4">
-                  {history.length === 0 ? (
-                    <div className="py-20 text-center">
-                      <div className="w-20 h-20 bg-white/5 rounded-full flex items-center justify-center mx-auto mb-4">
-                        <History size={32} className="text-slate-700" />
-                      </div>
-                      <p className="text-slate-500 font-medium">No transfer history found</p>
+              <div className="grid grid-cols-1 gap-4">
+                {history.length === 0 ? (
+                  <div className="py-20 text-center">
+                    <div className="w-20 h-20 bg-white/5 rounded-full flex items-center justify-center mx-auto mb-4">
+                      <History size={32} className="text-slate-700" />
                     </div>
-                  ) : (
-                    history.map((item) => (
-                      <div key={item.id} className="flex flex-col sm:flex-row sm:items-center justify-between p-4 sm:p-5 rounded-2xl bg-white/[0.02] border border-white/5 hover:bg-white/[0.04] transition-all gap-4">
-                        <div className="flex items-center gap-4 sm:gap-5">
-                          <div className={`w-10 h-10 sm:w-12 sm:h-12 rounded-xl sm:rounded-2xl flex items-center justify-center shrink-0 ${item.type === 'sent' ? 'bg-blue-500/10 text-blue-500' : 'bg-green-500/10 text-green-500'}`}>
-                            {item.type === 'sent' ? <Share2 size={20} className="sm:size-[24px]" /> : <Download size={20} className="sm:size-[24px]" />}
-                          </div>
-                          <div className="min-w-0">
-                            <p className="font-bold text-white text-base sm:text-lg truncate">
-                              {item.type === 'sent' ? `Sent to ${item.to}` : `Received from ${item.from}`}
-                            </p>
-                            <div className="flex flex-wrap items-center gap-2 sm:gap-3 mt-1">
-                              <span className="text-[10px] sm:text-xs text-slate-500 flex items-center gap-1">
-                                <Files size={10} className="sm:size-[12px]" /> {item.files} files
-                              </span>
-                              <span className="text-[10px] sm:text-xs text-slate-500 flex items-center gap-1">
-                                <Zap size={10} className="sm:size-[12px]" /> {formatSize(item.size)}
-                              </span>
-                              <span className="text-[10px] sm:text-xs text-slate-500 flex items-center gap-1">
-                                <Clock size={10} className="sm:size-[12px]" /> {item.time}
-                              </span>
-                            </div>
-                          </div>
+                    <p className="text-slate-500 font-medium">Tidak ada riwayat pengiriman</p>
+                  </div>
+                ) : (
+                  history.map((item) => (
+                    <div key={item.id} className="flex flex-col sm:flex-row sm:items-center justify-between p-4 sm:p-5 rounded-2xl bg-white/[0.02] border border-white/5 hover:bg-white/[0.04] transition-all gap-4">
+                      <div className="flex items-center gap-4 sm:gap-5">
+                        <div className={`w-10 h-10 sm:w-12 sm:h-12 rounded-xl sm:rounded-2xl flex items-center justify-center shrink-0 ${item.type === 'sent' ? 'bg-blue-500/10 text-blue-500' : 'bg-green-500/10 text-green-500'}`}>
+                          {item.type === 'sent' ? <Share2 size={20} className="sm:size-[24px]" /> : <Download size={20} className="sm:size-[24px]" />}
                         </div>
-                        <div className="flex items-center gap-2 self-end sm:self-center">
-                          <div className={`px-3 py-1 rounded-full text-[9px] sm:text-[10px] font-black uppercase tracking-wider ${item.type === 'sent' ? 'bg-blue-500/20 text-blue-400' : 'bg-green-500/20 text-green-400'}`}>
-                            {item.type}
+                        <div className="min-w-0">
+                          <p className="font-bold text-white text-base sm:text-lg truncate">
+                            {item.type === 'sent' ? `Dikirim ke ${item.to}` : `Diterima dari ${item.from}`}
+                          </p>
+                          <div className="flex flex-wrap items-center gap-2 sm:gap-3 mt-1">
+                            <span className="text-[10px] sm:text-xs text-slate-500 flex items-center gap-1">
+                              <Files size={10} className="sm:size-[12px]" /> {item.files} file
+                            </span>
+                            <span className="text-[10px] sm:text-xs text-slate-500 flex items-center gap-1">
+                              <Zap size={10} className="sm:size-[12px]" /> {formatSize(item.size)}
+                            </span>
+                            <span className="text-[10px] sm:text-xs text-slate-500 flex items-center gap-1">
+                              <Clock size={10} className="sm:size-[12px]" /> {item.time}
+                            </span>
                           </div>
                         </div>
                       </div>
-                    ))
-                  )}
-                </div>
+                      <div className="flex items-center gap-2 self-end sm:self-center">
+                        <div className={`px-3 py-1 rounded-full text-[9px] sm:text-[10px] font-black uppercase tracking-wider ${item.type === 'sent' ? 'bg-blue-500/20 text-blue-400' : 'bg-green-500/20 text-green-400'}`}>
+                          {item.type === 'sent' ? 'Dikirim' : 'Diterima'}
+                        </div>
+                      </div>
+                    </div>
+                  ))
+                )}
               </div>
             </div>
-          )}
+          </div>
         </main>
 
         {/* --- Overlays & Dialogs --- */}
@@ -1368,16 +1380,16 @@ function App() {
                     </div>
                   </div>
                   <h3 className="text-2xl font-black text-white mb-2">
-                    {transferType === 'sending' ? `Sending...` : 'Receiving...'}
+                    {transferType === 'sending' ? `Mengirim...` : 'Menerima...'}
                   </h3>
                   <p className="text-sm text-slate-400 font-medium truncate px-4">
-                    {currentFileMetadata ? currentFileMetadata.name : 'Processing stream data'}
+                    {currentFileMetadata ? currentFileMetadata.name : 'Memproses data aliran'}
                   </p>
                   <p className="text-[10px] text-slate-500 mt-2 font-bold uppercase tracking-widest">
                     {formatSize(processedBytes)} / {currentFileMetadata ? formatSize(currentFileMetadata.size) : '--'}
                   </p>
                   <p className="text-[9px] text-blue-400/60 mt-1 font-bold uppercase tracking-[0.2em]">
-                    ETA: {eta}
+                    Estimasi: {eta}
                   </p>
                 </div>
 
@@ -1411,7 +1423,7 @@ function App() {
                 </div>
 
                 <div className="flex items-center gap-2 justify-center text-[10px] font-bold text-slate-600 uppercase tracking-widest">
-                  <ShieldCheck size={12} className="text-green-500" /> End-to-End Encrypted
+                  Pengiriman P2P Aman
                 </div>
               </div>
             </motion.div>
@@ -1432,14 +1444,14 @@ function App() {
                     <Files size={28} className="text-white" />
                   </div>
                   <div className="flex-1">
-                    <h3 className="text-lg font-black text-white leading-tight">Incoming Transfer</h3>
+                    <h3 className="text-lg font-black text-white leading-tight">Pengiriman Masuk</h3>
                     <p className="text-xs text-slate-400 mt-1">
-                      <span className="font-bold text-blue-400">{users.find(u => u.id === incomingSignal.from)?.name || 'Someone'}</span> wants to send you files.
+                      <span className="font-bold text-blue-400">{users.find(u => u.id === incomingSignal.from)?.name || 'Seseorang'}</span> ingin mengirimkan file kepada Anda.
                     </p>
                     {incomingSignal.pin && (
                       <div className="mt-3 space-y-2">
                         <div className="flex items-center gap-1.5 text-[10px] font-bold text-green-500 bg-green-500/10 px-2 py-1 rounded-md w-fit">
-                          <Lock size={10} /> PIN PROTECTED
+                          <Lock size={10} /> DILINDUNGI PIN
                         </div>
                         <input 
                           type="text"
@@ -1462,13 +1474,13 @@ function App() {
                     onClick={acceptTransfer}
                     className="flex-1 bg-blue-600 hover:bg-blue-500 text-white py-3 rounded-2xl font-bold shadow-lg shadow-blue-600/20 active:scale-95 transition-all"
                   >
-                    Accept
+                    Terima
                   </button>
                   <button 
-                    onClick={() => setIncomingSignal(null)}
+                    onClick={declineTransfer}
                     className="px-6 bg-slate-800 hover:bg-slate-700 text-slate-300 py-3 rounded-2xl font-bold active:scale-95 transition-all"
                   >
-                    Decline
+                    Tolak
                   </button>
                 </div>
               </div>
@@ -1489,7 +1501,7 @@ function App() {
                     <div className="w-8 h-8 bg-green-500 rounded-full flex items-center justify-center">
                       <CheckCircle className="text-white" size={18} />
                     </div>
-                    <span className="font-bold text-white">Received {receivedFiles.length} Files</span>
+                    <span className="font-bold text-white">Menerima {receivedFiles.length} File</span>
                   </div>
                   <button onClick={() => {setReceivedFiles([]); setTransferState('idle');}} className="text-slate-500 hover:text-white p-1">
                     <X size={20} />
@@ -1541,15 +1553,15 @@ function App() {
                   <div className="w-24 h-24 mx-auto mb-6 flex items-center justify-center overflow-hidden">
                     <img src="/logo.png" alt="Logo Welcome" className="w-full h-full object-contain rounded-full shadow-2xl" />
                   </div>
-                  <h3 className="text-3xl font-black text-white mb-2">Welcome!</h3>
-                  <p className="text-sm text-slate-400 mb-8">Let's set a display name for your device so others can identify you.</p>
+                  <h3 className="text-3xl font-black text-white mb-2">Selamat Datang!</h3>
+                  <p className="text-sm text-slate-400 mb-8">Ayo buat nama tampilan untuk perangkat Anda agar orang lain dapat mengenali Anda.</p>
                   
                   <div className="space-y-4">
                     <div className="relative">
                       <input 
                         autoFocus
                         type="text"
-                        placeholder="Enter display name..."
+                        placeholder="Masukkan nama tampilan..."
                         value={tempName}
                         onChange={(e) => setTempName(e.target.value)}
                         onKeyDown={(e) => e.key === 'Enter' && handleSaveName()}
@@ -1565,7 +1577,7 @@ function App() {
                           : 'bg-blue-600 hover:bg-blue-500 text-white shadow-lg shadow-blue-600/20 active:scale-95'
                       }`}
                     >
-                      Start Sharing
+                      Mulai Berbagi
                     </button>
                   </div>
                 </div>
